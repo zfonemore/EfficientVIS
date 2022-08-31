@@ -28,6 +28,7 @@ wheels/
 *.npy
 *.ts
 model_ts*.txt
+*.zip
 
 # ipython/jupyter notebooks
 *.ipynb
