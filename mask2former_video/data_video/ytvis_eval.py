@@ -90,6 +90,7 @@ class YTVISEvaluator(DatasetEvaluator):
         self._metadata = MetadataCatalog.get(dataset_name)
 
         json_file = PathManager.get_local_path(self._metadata.json_file)
+        json_file = '/home/zfone/datasets/ytvis_2019/instances_val_sub.json'
         with contextlib.redirect_stdout(io.StringIO()):
             self._ytvis_api = YTVOS(json_file)
 
@@ -293,6 +294,16 @@ def instances_to_coco_json_video(inputs, outputs):
     return ytvis_results
 
 
+def find(cocoGt):
+    vidIds = sorted(cocoGt.getVidIds())
+    gts = cocoGt.loadAnns(cocoGt.getAnnIds(vidIds=vidIds))
+    poor_list = [27, 33, 37]
+    for gt in gts:
+        if gt['category_id'] in poor_list:
+            print(gt['video_id'])
+    import pdb
+    pdb.set_trace()
+
 def _evaluate_predictions_on_coco(
     coco_gt,
     coco_results,
@@ -302,6 +313,8 @@ def _evaluate_predictions_on_coco(
     Evaluate the coco results using COCOEval API.
     """
     assert len(coco_results) > 0
+
+    #find(coco_gt)
 
     coco_results = copy.deepcopy(coco_results)
     # When evaluating mask AP, if the results contain bbox, cocoapi will

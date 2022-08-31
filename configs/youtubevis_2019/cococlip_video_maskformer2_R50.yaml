@@ -43,5 +43,8 @@ MODEL:
       PANOPTIC_ON: False
       OVERLAP_THRESHOLD: 0.8
       OBJECT_MASK_THRESHOLD: 0.8
-SOLVER:
-  IMS_PER_BATCH: 16
+INPUT:
+  DATASET_MAPPER_NAME: "coco_clip"
+DATASETS:
+  TRAIN: ("coco_2017_train",)
+  TEST: ("coco_2017_val",)

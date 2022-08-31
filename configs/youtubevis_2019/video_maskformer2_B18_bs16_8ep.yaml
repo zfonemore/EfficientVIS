@@ -1,6 +1,8 @@
 _BASE_: Base-YouTubeVIS-VideoInstanceSegmentation.yaml
 MODEL:
-  WEIGHTS: "model_final_3c8ec9.pkl"
+  BACKBONE:
+    NAME: "BiSeNetV1"
+  WEIGHTS: None
   META_ARCHITECTURE: "VideoMaskFormer"
   SEM_SEG_HEAD:
     NAME: "MaskFormerHead"

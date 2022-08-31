@@ -19,6 +19,7 @@ import numpy as np
 import tqdm
 
 from torch.cuda.amp import autocast
+import torch
 
 from detectron2.config import get_cfg
 from detectron2.data.detection_utils import read_image
@@ -29,6 +30,9 @@ from mask2former import add_maskformer2_config
 from mask2former_video import add_maskformer2_video_config
 from predictor import VisualizationDemo
 
+from mask2former_video.data_video.datasets.ytvis_api.ytvos import YTVOS
+import contextlib, io
+import pycocotools.mask as mask_util
 
 # constants
 WINDOW_NAME = "mask2former video demo"
@@ -130,6 +134,44 @@ if __name__ == "__main__":
             img = read_image(path, format="BGR")
             vid_frames.append(img)
 
+        show_gt = False
+        if show_gt:
+            filename2vid = {'1f1396a9ef': 46, '30fe0ed0ce': 65, '3e35d85e4b': 80,
+                    '48d2909d9e': 95, '4b1a561480': 97, '4f5b3310e3': 104,
+                    '6aef3fd036': 137, '6cced81d30': 141, '7775043b5e': 147,
+                    '9c4419eb12': 185, 'b005747fee': 211, 'c16d9a4ade': 235,
+                    'df4750a8fe': 268
+                    }
+            vid = [filename2vid[path.split('/')[7]]]
+            json_file = '/home/zfone/datasets/ytvis_2019/instances_val_sub.json'
+            with contextlib.redirect_stdout(io.StringIO()):
+                ytvis_api = YTVOS(json_file)
+            gts = ytvis_api.loadAnns(ytvis_api.getAnnIds(vidIds=vid))
+            masks = [[] for i in range(len(vid_frames))]
+            categorys = []
+            scores = []
+            for gt in gts:
+                categorys.append(gt['category_id']-1)
+                h, w = gt['height'], gt['width']
+                scores.append(1.0)
+                segms = gt['segmentations']
+                for i in range(len(segms)):
+                    if segms[i] is None:
+                        mask = torch.zeros((1, h, w))
+                        masks[i].append(mask)
+                    else:
+                        mask = ytvis_api.annToMask(gt, i)
+                        masks[i].append(torch.from_numpy(mask).unsqueeze(0))
+            for i in range(len(masks)):
+                masks[i] = torch.cat(masks[i])
+
+            gts_dict = {}
+            gts_dict['image_size'] = (h, w)
+            gts_dict['pred_scores'] = scores
+            gts_dict['pred_labels'] = categorys
+            gts_dict['pred_masks'] = masks
+            gt_vis_output = demo.vis_gts(vid_frames, gts_dict)
+
         start_time = time.time()
         with autocast():
             predictions, visualized_output = demo.run_on_video(vid_frames)
@@ -138,6 +180,9 @@ if __name__ == "__main__":
                 len(predictions["pred_scores"]), time.time() - start_time
             )
         )
+
+        if show_gt:
+            visualized_output = gt_vis_output
 
         if args.output:
             if args.save_frames:
@@ -158,7 +203,7 @@ if __name__ == "__main__":
 
     elif args.video_input:
         video = cv2.VideoCapture(args.video_input)
-        
+
         vid_frames = []
         while video.isOpened():
             success, frame = video.read()

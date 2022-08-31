@@ -13,6 +13,7 @@ from detectron2.layers import Conv2d
 from mask2former.modeling.transformer_decoder.maskformer_transformer_decoder import TRANSFORMER_DECODER_REGISTRY
 
 from .position_encoding import PositionEmbeddingSine3D
+from .ccattention import CrissCrossAttention
 
 
 class SelfAttentionLayer(nn.Module):
@@ -133,69 +134,6 @@ class CrossAttentionLayer(nn.Module):
             return self.forward_pre(tgt, memory, memory_mask,
                                     memory_key_padding_mask, pos, query_pos)
         return self.forward_post(tgt, memory, memory_mask,
-                                 memory_key_padding_mask, pos, query_pos)
-
-
-class ShortAttentionLayer(nn.Module):
-
-    def __init__(self, d_model, nhead, dropout=0.0,
-                 activation="relu", normalize_before=False):
-        super().__init__()
-        self.multihead_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
-
-        self.norm = nn.LayerNorm(d_model)
-        self.dropout = nn.Dropout(dropout)
-
-        self.activation = _get_activation_fn(activation)
-        self.normalize_before = normalize_before
-
-        self._reset_parameters()
-
-    def _reset_parameters(self):
-        for p in self.parameters():
-            if p.dim() > 1:
-                nn.init.xavier_uniform_(p)
-
-    def with_pos_embed(self, tensor, pos: Optional[Tensor]):
-        return tensor if pos is None else tensor + pos
-
-    def forward_post(self, tgt, memory, value,
-                     memory_mask: Optional[Tensor] = None,
-                     memory_key_padding_mask: Optional[Tensor] = None,
-                     pos: Optional[Tensor] = None,
-                     query_pos: Optional[Tensor] = None):
-        tgt2 = self.multihead_attn(query=self.with_pos_embed(tgt, query_pos),
-                                   key=self.with_pos_embed(memory, pos),
-                                   value=value, attn_mask=memory_mask,
-                                   key_padding_mask=memory_key_padding_mask)[0]
-        tgt = tgt + self.dropout(tgt2)
-        tgt = self.norm(tgt)
-
-        return tgt
-
-    def forward_pre(self, tgt, memory, value,
-                    memory_mask: Optional[Tensor] = None,
-                    memory_key_padding_mask: Optional[Tensor] = None,
-                    pos: Optional[Tensor] = None,
-                    query_pos: Optional[Tensor] = None):
-        tgt2 = self.norm(tgt)
-        tgt2 = self.multihead_attn(query=self.with_pos_embed(tgt2, query_pos),
-                                   key=self.with_pos_embed(memory, pos),
-                                   value=value, attn_mask=memory_mask,
-                                   key_padding_mask=memory_key_padding_mask)[0]
-        tgt = tgt + self.dropout(tgt2)
-
-        return tgt
-
-    def forward(self, tgt, memory, value,
-                memory_mask: Optional[Tensor] = None,
-                memory_key_padding_mask: Optional[Tensor] = None,
-                pos: Optional[Tensor] = None,
-                query_pos: Optional[Tensor] = None):
-        if self.normalize_before:
-            return self.forward_pre(tgt, memory, value, memory_mask,
-                                    memory_key_padding_mask, pos, query_pos)
-        return self.forward_post(tgt, memory, value, memory_mask,
                                  memory_key_padding_mask, pos, query_pos)
 
 
@@ -401,18 +339,7 @@ class VideoMultiScaleMaskedTransformerDecoder(nn.Module):
             self.class_embed = nn.Linear(hidden_dim, num_classes + 1)
         self.mask_embed = MLP(hidden_dim, hidden_dim, mask_dim, 3)
 
-        self.short_proj = nn.ModuleList()
-        self.short_proj.append(Conv2d(in_channels, hidden_dim, kernel_size=1))
-        weight_init.c2_xavier_fill(self.short_proj[-1])
-
-        self.short_attn = ShortAttentionLayer(
-            d_model=hidden_dim,
-            nhead=nheads,
-            dropout=0.0,
-            normalize_before=pre_norm,
-        )
-
-
+        #self.crisscross = CrissCrossAttention(hidden_dim)
 
     @classmethod
     def from_config(cls, cfg, in_channels, mask_classification):
@@ -443,55 +370,11 @@ class VideoMultiScaleMaskedTransformerDecoder(nn.Module):
 
         return ret
 
-    def forward(self, x, mask_features, mask = None, scale_x = None, scale_mask_features = None, short_features = None):
-
-
+    def forward(self, x, mask_features, mask = None):
         bt, c_m, h_m, w_m = mask_features.shape
         bs = bt // self.num_frames if self.training else 1
         t = bt // bs
-
-        if self.training:
-            prev_mask_features = mask_features[0::2].detach().clone().flatten(2).permute(0, 2, 1)
-            curr_mask_features = mask_features[1::2].detach().clone().flatten(2).permute(0, 2, 1)
-        else:
-            prev_mask_features = mask_features.detach().clone().flatten(2).permute(0, 2, 1)
-
         mask_features = mask_features.view(bs, t, c_m, h_m, w_m)
-
-        short_features = self.short_proj[0](short_features)
-        if self.training:
-            prev_short_features = short_features[0::2].flatten(2).permute(0, 2, 1)
-            curr_short_features = short_features[1::2].flatten(2).permute(0, 2, 1)
-
-            curr_short_mask_features = self.short_attn(
-                curr_short_features, prev_short_features, prev_mask_features
-            )
-            curr_short_mask_features = curr_short_mask_features.view(bs, h_m, w_m, c_m).permute(0, 3, 1, 2).unsqueeze(0)
-
-            prev_short_mask_features = self.short_attn(
-                prev_short_features, curr_short_features, curr_mask_features
-            )
-            prev_short_mask_features = prev_short_mask_features.view(bs, h_m, w_m, c_m).permute(0, 3, 1, 2).unsqueeze(0)
-
-            short_mask_features = torch.cat((prev_short_mask_features, curr_short_mask_features), dim=0)
-            short_mask_features = short_mask_features.transpose(0, 1)
-        else:
-            short_mask_features = []
-            for i in range(0, t, 2):
-                prev_short_features = short_features[i:(i+1)].flatten(2).permute(0, 2, 1)
-                curr_short_features = short_features[(i+1):(i+2)].flatten(2).permute(0, 2, 1)
-                prev_short_mask_features = prev_mask_features[i:(i+1)]
-                curr_short_mask_features = self.short_attn(
-                    curr_short_features, prev_short_features, prev_short_mask_features
-                )
-                short_mask_features.append(prev_short_mask_features)
-                short_mask_features.append(curr_short_mask_features)
-            short_mask_features = torch.cat(short_mask_features)
-            short_mask_features = short_mask_features.transpose(1,2).view(t, c_m, h_m, w_m).unsqueeze(0)
-
-        if scale_mask_features is not None:
-            bt, c_m, scale_h_m, scale_w_m = scale_mask_features.shape
-            scale_mask_features = scale_mask_features.view(bs, t, c_m, scale_h_m, scale_w_m)
 
         # x is a list of multi-scale feature
         assert len(x) == self.num_feature_levels
@@ -504,13 +387,27 @@ class VideoMultiScaleMaskedTransformerDecoder(nn.Module):
 
         for i in range(self.num_feature_levels):
             size_list.append(x[i].shape[-2:])
-            pos.append(self.pe_layer(x[i].view(bs, t, -1, size_list[-1][0], size_list[-1][1]), None).flatten(3))
-            src.append(self.input_proj[i](x[i]).flatten(2) + self.level_embed.weight[i][None, :, None])
+            if i == self.num_feature_levels - 1:
+                if not self.training:
+                    index = torch.arange(0, t, 5) * bs
+                    sample_t = len(index)
+                pos.append(self.pe_layer(x[i][index].view(bs, sample_t, -1, size_list[-1][0], size_list[-1][1]), None).flatten(3))
+                src.append(self.input_proj[i](x[i][index]).flatten(2) + self.level_embed.weight[i][None, :, None])
+            else:
+                pos.append(self.pe_layer(x[i].view(bs, t, -1, size_list[-1][0], size_list[-1][1]), None).flatten(3))
+                src.append(self.input_proj[i](x[i]).flatten(2) + self.level_embed.weight[i][None, :, None])
 
             # NTxCxHW => NxTxCxHW => (TxHW)xNxC
             _, c, hw = src[-1].shape
-            pos[-1] = pos[-1].view(bs, t, c, hw).permute(1, 3, 0, 2).flatten(0, 1)
-            src[-1] = src[-1].view(bs, t, c, hw).permute(1, 3, 0, 2).flatten(0, 1)
+            if i == self.num_feature_levels - 1:
+                pos[-1] = pos[-1].view(bs, sample_t, c, hw).permute(1, 3, 0, 2).flatten(0, 1)
+                src[-1] = src[-1].view(bs, sample_t, c, hw).permute(1, 3, 0, 2).flatten(0, 1)
+            else:
+                pos[-1] = pos[-1].view(bs, t, c, hw).permute(1, 3, 0, 2).flatten(0, 1)
+                src[-1] = src[-1].view(bs, t, c, hw).permute(1, 3, 0, 2).flatten(0, 1)
+            #src[-1] = src[-1].view(bs, t, c, hw).permute(0, 2, 1, 3)
+            #src[-1] = self.crisscross(src[-1]).permute(2, 3, 0, 1).flatten(0, 1)
+
 
         # QxNxC
         query_embed = self.query_embed.weight.unsqueeze(1).repeat(1, bs, 1)
@@ -520,41 +417,28 @@ class VideoMultiScaleMaskedTransformerDecoder(nn.Module):
         predictions_mask = []
 
         # prediction heads on learnable query features
-        outputs_class, outputs_mask, attn_mask = self.forward_prediction_heads(output, mask_features, scale_mask_features, attn_mask_target_size=size_list[0])
+        outputs_class, outputs_mask, attn_mask = self.forward_prediction_heads(output, mask_features, attn_mask_target_size=size_list[0])
         predictions_class.append(outputs_class)
         predictions_mask.append(outputs_mask)
 
-        TEST_TIME = False
-        if TEST_TIME:
-            cross_time = 0
-            self_time = 0
-            ffn_time = 0
-            mask_time = 0
         for i in range(self.num_layers):
             level_index = i % self.num_feature_levels
             attn_mask[torch.where(attn_mask.sum(-1) == attn_mask.shape[-1])] = False
-
-            if TEST_TIME:
-                import time
-                torch.cuda.synchronize()
-                st = time.time()
-
             # attention: cross-attention first
-            output = self.transformer_cross_attention_layers[i](
-                output, src[level_index],
-                memory_mask=attn_mask,
-                memory_key_padding_mask=None,  # here we do not apply masking on padded region
-                pos=pos[level_index], query_pos=query_embed
-            )
-
-            if TEST_TIME:
-                torch.cuda.synchronize()
-                ed = time.time()
-                cross_time += (ed - st)
-
-            if TEST_TIME:
-                torch.cuda.synchronize()
-                st = time.time()
+            if level_index == self.num_feature_levels-1:
+                output = self.transformer_cross_attention_layers[i](
+                    output, src[level_index],
+                    memory_mask=attn_mask,
+                    memory_key_padding_mask=None,  # here we do not apply masking on padded region
+                    pos=pos[level_index], query_pos=query_embed
+                )
+            else:
+                output = self.transformer_cross_attention_layers[i](
+                    output, src[level_index],
+                    memory_mask=attn_mask,
+                    memory_key_padding_mask=None,  # here we do not apply masking on padded region
+                    pos=pos[level_index], query_pos=query_embed
+                )
 
             output = self.transformer_self_attention_layers[i](
                 output, tgt_mask=None,
@@ -562,56 +446,16 @@ class VideoMultiScaleMaskedTransformerDecoder(nn.Module):
                 query_pos=query_embed
             )
 
-            if TEST_TIME:
-                torch.cuda.synchronize()
-                ed = time.time()
-                self_time += (ed - st)
-
-            if TEST_TIME:
-                torch.cuda.synchronize()
-                st = time.time()
             # FFN
             output = self.transformer_ffn_layers[i](
                 output
             )
 
-            if TEST_TIME:
-                torch.cuda.synchronize()
-                ed = time.time()
-                ffn_time += (ed - st)
-
-            if TEST_TIME:
-                torch.cuda.synchronize()
-                st = time.time()
-
-            outputs_class, outputs_mask, attn_mask = self.forward_prediction_heads(output, mask_features, scale_mask_features, attn_mask_target_size=size_list[(i + 1) % self.num_feature_levels])
-
-            if TEST_TIME:
-                torch.cuda.synchronize()
-                ed = time.time()
-                mask_time += (ed - st)
-
-            if self.training:
-                if i == self.num_layers-1:
-                    short_outputs_mask = self.forward_mask_heads(output, short_mask_features)
-                    predictions_class.append(outputs_class)
-                    predictions_mask.append(short_outputs_mask)
-
+            outputs_class, outputs_mask, attn_mask = self.forward_prediction_heads(output, mask_features, attn_mask_target_size=size_list[(i + 1) % self.num_feature_levels], level_index=level_index)
             predictions_class.append(outputs_class)
             predictions_mask.append(outputs_mask)
 
-            if not self.training:
-                if i == self.num_layers-1:
-                    short_outputs_mask = self.forward_mask_heads(output, short_mask_features)
-                    predictions_class.append(outputs_class)
-                    predictions_mask.append(short_outputs_mask)
-
-        if TEST_TIME:
-            print('cross time:', cross_time)
-            print('self time:', self_time)
-            print('ffn time:', ffn_time)
-            print('mask time:', mask_time)
-        #assert len(predictions_class) == self.num_layers + 2
+        assert len(predictions_class) == self.num_layers + 1
 
         out = {
             'pred_logits': predictions_class[-1],
@@ -622,76 +466,22 @@ class VideoMultiScaleMaskedTransformerDecoder(nn.Module):
         }
         return out
 
-    def forward_mask_heads(self, output, mask_features):
-        decoder_output = self.decoder_norm(output)
-        decoder_output = decoder_output.transpose(0, 1)
-        mask_embed = self.mask_embed(decoder_output)
-
-        TEST_TIME = False
-        if TEST_TIME:
-            import time
-            torch.cuda.synchronize()
-            st = time.time()
-
-        outputs_mask = torch.einsum("bqc,btchw->bqthw", mask_embed, mask_features)
-
-        if TEST_TIME:
-            torch.cuda.synchronize()
-            ed = time.time()
-            print('mask time:', ed - st)
-
-        return outputs_mask
-
-
-
-    def forward_prediction_heads(self, output, mask_features, scale_mask_features, attn_mask_target_size):
+    def forward_prediction_heads(self, output, mask_features, attn_mask_target_size, level_index=0):
         decoder_output = self.decoder_norm(output)
         decoder_output = decoder_output.transpose(0, 1)
         outputs_class = self.class_embed(decoder_output)
         mask_embed = self.mask_embed(decoder_output)
-
-        TEST_TIME = False
-        if TEST_TIME:
-            import time
-            torch.cuda.synchronize()
-            st = time.time()
-
         outputs_mask = torch.einsum("bqc,btchw->bqthw", mask_embed, mask_features)
-        b, q, t, h, w = outputs_mask.shape
-
-
-        if TEST_TIME:
-            torch.cuda.synchronize()
-            ed = time.time()
-            print('mask time:', ed - st)
-
-
-        if TEST_TIME:
-            torch.cuda.synchronize()
-            st = time.time()
-
-        if scale_mask_features is not None:
-            scale_outputs_mask = torch.einsum("bqc,btchw->bqthw", mask_embed, scale_mask_features)
-            scale_outputs_mask = F.interpolate(scale_outputs_mask.flatten(0, 1), size=(h, w), mode="bilinear", align_corners=False).view(
-                b, q, t, h, w)
-
-        if TEST_TIME:
-            torch.cuda.synchronize()
-            ed = time.time()
-            print('mask time:', ed - st)
-
-        new_outputs_mask = []
-        for i in range(t):
-            if i % 1 == 0:
-                new_outputs_mask.append(outputs_mask[:,:,i:(i+1)])
-            else:
-                new_outputs_mask.append(scale_outputs_mask[:,:,i:(i+1)])
-        outputs_mask = torch.cat(new_outputs_mask, dim=2)
+        b, q, t, _, _ = outputs_mask.shape
 
         # NOTE: prediction is of higher-resolution
         # [B, Q, T, H, W] -> [B, Q, T*H*W] -> [B, h, Q, T*H*W] -> [B*h, Q, T*HW]
         attn_mask = F.interpolate(outputs_mask.flatten(0, 1), size=attn_mask_target_size, mode="bilinear", align_corners=False).view(
             b, q, t, attn_mask_target_size[0], attn_mask_target_size[1])
+        if level_index == self.num_feature_levels-2:
+            index = torch.arange(0, t, 5)
+            attn_mask = attn_mask.permute(2, 0, 1, 3, 4)
+            attn_mask = attn_mask[index].permute(1, 2, 0, 3, 4)
         # must use bool type
         # If a BoolTensor is provided, positions with ``True`` are not allowed to attend while ``False`` values will be unchanged.
         attn_mask = (attn_mask.sigmoid().flatten(2).unsqueeze(1).repeat(1, self.num_heads, 1, 1).flatten(0, 1) < 0.5).bool()

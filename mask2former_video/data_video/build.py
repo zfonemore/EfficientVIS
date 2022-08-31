@@ -4,6 +4,9 @@
 import itertools
 import logging
 import torch.utils.data
+from tabulate import tabulate
+from termcolor import colored
+from detectron2.utils.logger import _log_api_usage, log_first_n
 
 from detectron2.config import CfgNode, configurable
 from detectron2.data.build import (
@@ -11,11 +14,96 @@ from detectron2.data.build import (
     load_proposals_into_dataset,
     trivial_batch_collator,
 )
-from detectron2.data.catalog import DatasetCatalog
+from detectron2.data.catalog import DatasetCatalog, MetadataCatalog
 from detectron2.data.common import DatasetFromList, MapDataset
 from detectron2.data.dataset_mapper import DatasetMapper
 from detectron2.data.samplers import InferenceSampler, TrainingSampler
 from detectron2.utils.comm import get_world_size
+
+
+def plot_histogram(data):
+    import matplotlib.pyplot as plt
+    import numpy as np
+    n, bins, patches = plt.hist(x=data, bins='auto', color='#0504aa',
+	alpha=0.7, rwidth=0.85)
+    plt.grid(axis='y', alpha=0.75)
+    plt.xlabel('Value')
+    plt.ylabel('Frequency')
+    plt.title('My Very Own Histogram')
+    plt.text(23, 45, r'$\mu=15, b=3$')
+    maxfreq = n.max()
+    plt.ylim(ymax=np.ceil(maxfreq / 10) * 10 if maxfreq % 10 else maxfreq + 10)
+    plt.savefig('histogram.png')
+    plt.show()
+
+def plot_bar(data, class_names):
+
+    import matplotlib.pyplot as plt
+    import numpy as np
+    plt.figure(figsize=(40, 10), dpi=80)
+    x_range = np.arange(len(data)) * 4
+    plt.bar(x_range, data, width=2)
+    x_name = class_names
+    plt.xticks(x_range, x_name)
+    plt.xticks(fontsize=14, rotation=10)
+    plt.yticks(fontsize=14, rotation=0)
+    plt.savefig('category_stat.png')
+
+def print_instances_class_histogram(dataset_dicts, class_names):
+    """
+    Args:
+        dataset_dicts (list[dict]): list of dataset dicts.
+        class_names (list[str]): list of class names (zero-indexed).
+    """
+    import numpy as np
+    num_classes = len(class_names)
+    hist_bins = np.arange(num_classes + 1)
+    histogram = np.zeros((num_classes,), dtype=np.int)
+    for entry in dataset_dicts:
+        annos = entry["annotations"]
+        classes = np.asarray(
+            [x[0]["category_id"] for x in annos if len(x)>0], dtype=np.int
+        )
+        if len(classes):
+            assert classes.min() >= 0, f"Got an invalid category_id={classes.min()}"
+            assert (
+                classes.max() < num_classes
+            ), f"Got an invalid category_id={classes.max()} for a dataset of {num_classes} classes"
+        histogram += np.histogram(classes, bins=hist_bins)[0]
+
+    #plot_histogram(histogram)
+    N_COLS = min(6, len(class_names) * 2)
+
+    def short_name(x):
+        # make long class names shorter. useful for lvis
+        if len(x) > 13:
+            return x[:11] + ".."
+        return x
+
+    data = list(
+        itertools.chain(*[[short_name(class_names[i]), int(v)] for i, v in enumerate(histogram)])
+    )
+    plot_bar(data[1::2], class_names)
+    total_num_instances = sum(data[1::2])
+    data.extend([None] * (N_COLS - (len(data) % N_COLS)))
+    if num_classes > 1:
+        data.extend(["total", total_num_instances])
+    data = itertools.zip_longest(*[data[i::N_COLS] for i in range(N_COLS)])
+    table = tabulate(
+        data,
+        headers=["category", "#instances"] * (N_COLS // 2),
+        tablefmt="pipe",
+        numalign="left",
+        stralign="center",
+    )
+    log_first_n(
+        logging.INFO,
+        "Distribution of instances among all {} categories:\n".format(num_classes)
+        + colored(table, "cyan"),
+        key="message",
+    )
+
+
 
 
 def _compute_num_images_per_worker(cfg: CfgNode):
@@ -106,6 +194,10 @@ def get_detection_dataset_dicts(
     has_instances = "annotations" in dataset_dicts[0]
     if filter_empty and has_instances:
         dataset_dicts = filter_images_with_only_crowd_annotations(dataset_dicts, dataset_names)
+
+    class_names = MetadataCatalog.get(dataset_names[0]).thing_classes
+    print_instances_class_histogram(dataset_dicts, class_names)
+
 
     assert len(dataset_dicts), "No valid data found in {}.".format(",".join(dataset_names))
     return dataset_dicts

@@ -217,6 +217,8 @@ Category ids in annotations are not in [1, #categories]! We'll apply a mapping f
         record["width"] = vid_dict["width"]
         record["length"] = vid_dict["length"]
         video_id = record["video_id"] = vid_dict["id"]
+        #if video_id in [46, 65, 80, 95, 97, 104, 137, 141, 147, 185, 211, 235, 268]:
+        #    print(vid_dict["file_names"][0])
 
         video_objs = []
         for frame_idx in range(record["length"]):

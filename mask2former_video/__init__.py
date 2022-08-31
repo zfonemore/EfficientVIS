@@ -10,6 +10,7 @@ from .video_maskformer_model import VideoMaskFormer
 # video
 from .data_video import (
     YTVISDatasetMapper,
+    CocoClipDatasetMapper,
     YTVISEvaluator,
     build_detection_train_loader,
     build_detection_test_loader,

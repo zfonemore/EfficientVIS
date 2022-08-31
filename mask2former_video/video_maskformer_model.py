@@ -114,7 +114,7 @@ class VideoMaskFormer(nn.Module):
         if deep_supervision:
             dec_layers = cfg.MODEL.MASK_FORMER.DEC_LAYERS
             aux_weight_dict = {}
-            for i in range(dec_layers - 1):
+            for i in range(dec_layers):
                 aux_weight_dict.update({k + f"_{i}": v for k, v in weight_dict.items()})
             weight_dict.update(aux_weight_dict)
 
@@ -178,14 +178,43 @@ class VideoMaskFormer(nn.Module):
                         Each dict contains keys "id", "category_id", "isthing".
         """
         images = []
+        scale_images = []
         for video in batched_inputs:
-            for frame in video["image"]:
+            for frame, scale_frame in zip(video["image"], video["scale_image"]):
                 images.append(frame.to(self.device))
+                scale_images.append(scale_frame.to(self.device))
+
         images = [(x - self.pixel_mean) / self.pixel_std for x in images]
         images = ImageList.from_tensors(images, self.size_divisibility)
 
+
+        scale_images = [(x - self.pixel_mean) / self.pixel_std for x in scale_images]
+        scale_images = ImageList.from_tensors(scale_images, self.size_divisibility)
+
+        TEST_TIME = False
+
+        if TEST_TIME:
+            import time
+            torch.cuda.synchronize()
+            st = time.time()
+
         features = self.backbone(images.tensor)
+        #scale_features = self.backbone(scale_images.tensor)
+
+        if TEST_TIME:
+            torch.cuda.synchronize()
+            ed = time.time()
+            print("backbone time:", ed - st)
+
+            torch.cuda.synchronize()
+            st = time.time()
+
         outputs = self.sem_seg_head(features)
+
+        if TEST_TIME:
+            torch.cuda.synchronize()
+            ed = time.time()
+            print("decoder time:", ed - st)
 
         if self.training:
             # mask classification target
@@ -206,6 +235,7 @@ class VideoMaskFormer(nn.Module):
             mask_pred_results = outputs["pred_masks"]
 
             mask_cls_result = mask_cls_results[0]
+
             # upsample masks
             mask_pred_result = retry_if_cuda_oom(F.interpolate)(
                 mask_pred_results[0],
@@ -213,7 +243,6 @@ class VideoMaskFormer(nn.Module):
                 mode="bilinear",
                 align_corners=False,
             )
-
             del outputs
 
             input_per_image = batched_inputs[0]
@@ -222,7 +251,18 @@ class VideoMaskFormer(nn.Module):
             height = input_per_image.get("height", image_size[0])  # raw image size before data augmentation
             width = input_per_image.get("width", image_size[1])
 
-            return retry_if_cuda_oom(self.inference_video)(mask_cls_result, mask_pred_result, image_size, height, width)
+            if TEST_TIME:
+                torch.cuda.synchronize()
+                st = time.time()
+
+            output_results = retry_if_cuda_oom(self.inference_video)(mask_cls_result, mask_pred_result, image_size, height, width)
+
+            if TEST_TIME:
+                torch.cuda.synchronize()
+                ed = time.time()
+                print("inference video time:", ed - st)
+
+            return output_results
 
     def prepare_targets(self, targets, images):
         h_pad, w_pad = images.tensor.shape[-2:]

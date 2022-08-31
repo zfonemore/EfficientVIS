@@ -112,13 +112,35 @@ class MaskFormerHead(nn.Module):
             ),
         }
 
-    def forward(self, features, mask=None):
-        return self.layers(features, mask)
+    def forward(self, features, scale_features=None, mask=None):
+        return self.layers(features, scale_features, mask)
 
-    def layers(self, features, mask=None):
+    def layers(self, features, scale_features=None, mask=None):
+        TEST_TIME = False
+        if TEST_TIME:
+            import time, torch
+            torch.cuda.synchronize()
+            st = time.time()
+
         mask_features, transformer_encoder_features, multi_scale_features = self.pixel_decoder.forward_features(features)
+
+        short_features = features['res2'].detach()
+
+        if TEST_TIME:
+            torch.cuda.synchronize()
+            ed = time.time()
+            print('fpn time:', ed - st)
+
+        if scale_features is not None:
+            scale_mask_features, scale_transformer_encoder_features, scale_multi_scale_features = self.pixel_decoder.forward_features(scale_features)
+        else:
+            scale_mask_features, scale_multi_scale_features = None, None
+
+        if TEST_TIME:
+            torch.cuda.synchronize()
+            st = time.time()
         if self.transformer_in_feature == "multi_scale_pixel_decoder":
-            predictions = self.predictor(multi_scale_features, mask_features, mask)
+            predictions = self.predictor(multi_scale_features, mask_features, mask, short_features=short_features)
         else:
             if self.transformer_in_feature == "transformer_encoder":
                 assert (
@@ -129,4 +151,9 @@ class MaskFormerHead(nn.Module):
                 predictions = self.predictor(mask_features, mask_features, mask)
             else:
                 predictions = self.predictor(features[self.transformer_in_feature], mask_features, mask)
+
+        if TEST_TIME:
+            torch.cuda.synchronize()
+            ed = time.time()
+            print('trans decoder time:', ed - st)
         return predictions

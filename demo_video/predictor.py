@@ -15,6 +15,7 @@ from detectron2.structures import Instances
 from detectron2.utils.video_visualizer import VideoVisualizer
 from detectron2.utils.visualizer import ColorMode
 
+from detectron2.data import transforms as T
 
 class VisualizationDemo(object):
     def __init__(self, cfg, instance_mode=ColorMode.IMAGE, parallel=False):
@@ -72,6 +73,38 @@ class VisualizationDemo(object):
         return predictions, total_vis_output
 
 
+    def vis_gts(self, frames, gts):
+        """
+        Args:
+            frames (List[np.ndarray]): a list of images of shape (H, W, C) (in BGR order).
+                This is the format used by OpenCV.
+        Returns:
+            predictions (dict): the output of the model.
+            vis_output (VisImage): the visualized image output.
+        """
+        vis_output = None
+
+        image_size = gts["image_size"]
+        pred_scores = gts["pred_scores"]
+        pred_labels = gts["pred_labels"]
+        pred_masks = gts["pred_masks"]
+
+        total_vis_output = []
+        for frame_idx in range(len(frames)):
+            frame = frames[frame_idx][:, :, ::-1]
+            visualizer = TrackVisualizer(frame, self.metadata, instance_mode=self.instance_mode)
+            ins = Instances(image_size)
+            if len(pred_scores) > 0:
+                ins.scores = pred_scores
+                ins.pred_classes = pred_labels
+                ins.pred_masks = pred_masks[frame_idx]
+
+            vis_output = visualizer.draw_instance_predictions(predictions=ins)
+            total_vis_output.append(vis_output)
+
+        return total_vis_output
+
+
 class VideoPredictor(DefaultPredictor):
     """
     Create a simple end-to-end predictor with the given config that runs on
@@ -103,17 +136,29 @@ class VideoPredictor(DefaultPredictor):
         """
         with torch.no_grad():  # https://github.com/sphinx-doc/sphinx/issues/4258
             input_frames = []
+            scale_input_frames = []
             for original_image in frames:
                 # Apply pre-processing to image.
                 if self.input_format == "RGB":
                     # whether the model expects BGR inputs or RGB
                     original_image = original_image[:, :, ::-1]
+
+                import copy
+
                 height, width = original_image.shape[:2]
                 image = self.aug.get_transform(original_image).apply_image(original_image)
+                scale_ori_image = copy.deepcopy(image)
+
                 image = torch.as_tensor(image.astype("float32").transpose(2, 0, 1))
                 input_frames.append(image)
 
-            inputs = {"image": input_frames, "height": height, "width": width}
+                h, w = scale_ori_image.shape[:2]
+                scale_trans = T.ResizeScale(0.75, 0.75, h, w)
+                scale_image = scale_trans.get_transform(scale_ori_image).apply_image(scale_ori_image)
+                scale_image = torch.as_tensor(scale_image.astype("float32").transpose(2, 0, 1))
+                scale_input_frames.append(scale_image)
+
+            inputs = {"image": input_frames, "scale_image": scale_input_frames, "height": height, "width": width}
             predictions = self.model([inputs])
             return predictions
 
