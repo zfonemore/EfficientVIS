@@ -140,7 +140,7 @@ class MaskFormerHead(nn.Module):
             torch.cuda.synchronize()
             st = time.time()
         if self.transformer_in_feature == "multi_scale_pixel_decoder":
-            predictions = self.predictor(multi_scale_features, mask_features, mask, short_features=short_features)
+            predictions = self.predictor(multi_scale_features, mask_features, mask)
         else:
             if self.transformer_in_feature == "transformer_encoder":
                 assert (

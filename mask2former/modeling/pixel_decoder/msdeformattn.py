@@ -201,7 +201,7 @@ class MSDeformAttnPixelDecoder(nn.Module):
         self.in_features = [k for k, v in input_shape]  # starting from "res2" to "res5"
         self.feature_strides = [v.stride for k, v in input_shape]
         self.feature_channels = [v.channels for k, v in input_shape]
-        
+
         # this is the input shape of transformer encoder (could use less features than pixel decoder
         transformer_input_shape = sorted(transformer_input_shape.items(), key=lambda x: x[1].stride)
         self.transformer_in_features = [k for k, v in transformer_input_shape]  # starting from "res2" to "res5"
@@ -250,7 +250,7 @@ class MSDeformAttnPixelDecoder(nn.Module):
             padding=0,
         )
         weight_init.c2_xavier_fill(self.mask_features)
-        
+
         self.maskformer_num_feature_levels = 3  # always use 3 scales
         self.common_stride = common_stride
 
@@ -335,6 +335,7 @@ class MSDeformAttnPixelDecoder(nn.Module):
         out = []
         multi_scale_features = []
         num_cur_levels = 0
+        share = True
         for i, z in enumerate(y):
             out.append(z.transpose(1, 2).view(bs, -1, spatial_shapes[i][0], spatial_shapes[i][1]))
 

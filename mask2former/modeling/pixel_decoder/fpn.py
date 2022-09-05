@@ -60,6 +60,7 @@ class BasePixelDecoder(nn.Module):
         feature_channels = [v.channels for k, v in input_shape]
 
         lateral_convs = []
+        light_lateral_convs = []
         output_convs = []
 
         use_bias = norm == ""
@@ -80,14 +81,22 @@ class BasePixelDecoder(nn.Module):
                 self.add_module("layer_{}".format(idx + 1), output_conv)
 
                 lateral_convs.append(None)
+                light_lateral_convs.append(None)
                 output_convs.append(output_conv)
             else:
-                lateral_norm = get_norm(norm, conv_dim)
+                lateral_norm = get_norm(norm, conv_dim // 2)
+                light_lateral_norm = get_norm(norm, conv_dim // 2)
                 output_norm = get_norm(norm, conv_dim)
 
                 lateral_conv = Conv2d(
-                    in_channels, conv_dim, kernel_size=1, bias=use_bias, norm=lateral_norm
+                    in_channels, conv_dim // 2, kernel_size=1, bias=use_bias, norm=lateral_norm
                 )
+
+                light_lateral_conv = Conv2d(
+                    in_channels, conv_dim // 2, kernel_size=1, bias=use_bias, norm=light_lateral_norm
+                )
+
+
                 output_conv = Conv2d(
                     conv_dim,
                     conv_dim,
@@ -99,15 +108,19 @@ class BasePixelDecoder(nn.Module):
                     activation=F.relu,
                 )
                 weight_init.c2_xavier_fill(lateral_conv)
+                weight_init.c2_xavier_fill(light_lateral_conv)
                 weight_init.c2_xavier_fill(output_conv)
                 self.add_module("adapter_{}".format(idx + 1), lateral_conv)
+                self.add_module("light_adapter_{}".format(idx + 1), light_lateral_conv)
                 self.add_module("layer_{}".format(idx + 1), output_conv)
 
                 lateral_convs.append(lateral_conv)
+                light_lateral_convs.append(light_lateral_conv)
                 output_convs.append(output_conv)
         # Place convs into top-down order (from low to high resolution)
         # to make the top-down computation in forward clearer.
         self.lateral_convs = lateral_convs[::-1]
+        self.light_lateral_convs = light_lateral_convs[::-1]
         self.output_convs = output_convs[::-1]
 
         self.mask_dim = mask_dim
@@ -141,6 +154,7 @@ class BasePixelDecoder(nn.Module):
             x = features[f]
             lateral_conv = self.lateral_convs[idx]
             output_conv = self.output_convs[idx]
+
             if lateral_conv is None:
                 y = output_conv(x)
             else:
@@ -148,6 +162,8 @@ class BasePixelDecoder(nn.Module):
                 # Following FPN implementation, we use nearest upsampling here
                 y = cur_fpn + F.interpolate(y, size=cur_fpn.shape[-2:], mode="nearest")
                 y = output_conv(y)
+
+
             if num_cur_levels < self.maskformer_num_feature_levels:
                 multi_scale_features.append(y)
                 num_cur_levels += 1
@@ -288,16 +304,33 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
         for idx, f in enumerate(self.in_features[::-1]):
             x = features[f]
             lateral_conv = self.lateral_convs[idx]
+            light_lateral_conv = self.light_lateral_convs[idx]
             output_conv = self.output_convs[idx]
             if lateral_conv is None:
                 transformer = self.input_proj(x)
                 pos = self.pe_layer(x)
                 transformer = self.transformer(transformer, None, pos)
                 y = output_conv(transformer)
+
+                '''
+                prev_y = y[0::2]
+                if 2*len(prev_y) > len(y):
+                    prev_y = prev_y[:-1]
+                y[1::2] = prev_y
+                '''
                 # save intermediate feature as input to Transformer decoder
                 transformer_encoder_features = transformer
             else:
-                cur_fpn = lateral_conv(x)
+                global_cur_fpn = lateral_conv(x)
+                light_cur_fpn = light_lateral_conv(x)
+                cur_fpn = torch.cat((global_cur_fpn, light_cur_fpn), dim=1)
+                '''
+                n, c, h, w = light_cur_fpn.shape
+                if len(light_cur_fpn) % 2 != 0:
+                    light_cur_fpn = light_cur_fpn[:-1]
+                light_cur_fpn = light_cur_fpn.view(n // 2, c * 2, h, w)
+                cur_fpn[1::2] = light_cur_fpn
+                '''
                 # Following FPN implementation, we use nearest upsampling here
                 y = cur_fpn + F.interpolate(y, size=cur_fpn.shape[-2:], mode="nearest")
                 y = output_conv(y)
