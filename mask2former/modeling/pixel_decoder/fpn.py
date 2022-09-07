@@ -306,37 +306,55 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
             lateral_conv = self.lateral_convs[idx]
             light_lateral_conv = self.light_lateral_convs[idx]
             output_conv = self.output_convs[idx]
+            gap = 1
+            if gap > 1:
+                T = len(x)
+                pt = T % gap
+                if pt == 0:
+                    pt = gap
+                repeat_tensor = x.new_ones(len(x[0::gap]), dtype=torch.int) * gap
+                repeat_tensor[-1] = pt
+
             if lateral_conv is None:
                 transformer = self.input_proj(x)
                 pos = self.pe_layer(x)
                 transformer = self.transformer(transformer, None, pos)
+                #share_y = output_conv(transformer)
+                #y = torch.repeat_interleave(share_y, repeat_tensor, dim=0)
                 y = output_conv(transformer)
+                #share_y = y[0::gap]
 
-                '''
-                prev_y = y[0::2]
-                if 2*len(prev_y) > len(y):
-                    prev_y = prev_y[:-1]
-                y[1::2] = prev_y
-                '''
                 # save intermediate feature as input to Transformer decoder
                 transformer_encoder_features = transformer
             else:
                 global_cur_fpn = lateral_conv(x)
-                light_cur_fpn = light_lateral_conv(x)
+                light_cur_fpn = light_lateral_conv(x[0::gap])
+
+                if gap > 1:
+                    share_cur_fpn = torch.cat((global_cur_fpn[0::gap], light_cur_fpn), dim=1)
+
+                    light_cur_fpn = torch.repeat_interleave(light_cur_fpn, repeat_tensor, dim=0)
+                #for j in range(1, pt):
+                #    light_cur_fpn[j::gap] = light_cur_fpn[0::gap]
+                #for j in range(pt, gap):
+                #    light_cur_fpn[j::gap] = light_cur_fpn[0::gap][:-1]
                 cur_fpn = torch.cat((global_cur_fpn, light_cur_fpn), dim=1)
-                '''
-                n, c, h, w = light_cur_fpn.shape
-                if len(light_cur_fpn) % 2 != 0:
-                    light_cur_fpn = light_cur_fpn[:-1]
-                light_cur_fpn = light_cur_fpn.view(n // 2, c * 2, h, w)
-                cur_fpn[1::2] = light_cur_fpn
-                '''
+
                 # Following FPN implementation, we use nearest upsampling here
                 y = cur_fpn + F.interpolate(y, size=cur_fpn.shape[-2:], mode="nearest")
                 y = output_conv(y)
+
+                if gap > 1:
+                    share_y = share_cur_fpn + F.interpolate(share_y, size=share_cur_fpn.shape[-2:], mode="nearest")
+                    share_y = output_conv(share_y)
+
             if num_cur_levels < self.maskformer_num_feature_levels:
-                multi_scale_features.append(y)
+                if gap > 1:
+                    multi_scale_features.append(share_y)
+                else:
+                    multi_scale_features.append(y)
                 num_cur_levels += 1
+
         return self.mask_features(y), transformer_encoder_features, multi_scale_features
 
     def forward(self, features, targets=None):

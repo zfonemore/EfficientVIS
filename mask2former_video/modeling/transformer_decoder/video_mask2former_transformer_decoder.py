@@ -401,17 +401,18 @@ class VideoMultiScaleMaskedTransformerDecoder(nn.Module):
             self.class_embed = nn.Linear(hidden_dim, num_classes + 1)
         self.mask_embed = MLP(hidden_dim, hidden_dim, mask_dim, 3)
 
-        self.short_proj = nn.ModuleList()
-        self.short_proj.append(Conv2d(in_channels, hidden_dim, kernel_size=1))
-        weight_init.c2_xavier_fill(self.short_proj[-1])
+        short_prop = False
+        if short_prop:
+            self.short_proj = nn.ModuleList()
+            self.short_proj.append(Conv2d(in_channels, hidden_dim, kernel_size=1))
+            weight_init.c2_xavier_fill(self.short_proj[-1])
 
-        self.short_attn = ShortAttentionLayer(
-            d_model=hidden_dim,
-            nhead=nheads,
-            dropout=0.0,
-            normalize_before=pre_norm,
-        )
-
+            self.short_attn = ShortAttentionLayer(
+                d_model=hidden_dim,
+                nhead=nheads,
+                dropout=0.0,
+                normalize_before=pre_norm,
+            )
 
 
     @classmethod
@@ -446,48 +447,62 @@ class VideoMultiScaleMaskedTransformerDecoder(nn.Module):
     def forward(self, x, mask_features, mask = None, scale_x = None, scale_mask_features = None, short_features = None):
 
 
+
         bt, c_m, h_m, w_m = mask_features.shape
+
         bs = bt // self.num_frames if self.training else 1
         t = bt // bs
 
-        if self.training:
-            prev_mask_features = mask_features[0::2].detach().clone().flatten(2).permute(0, 2, 1)
-            curr_mask_features = mask_features[1::2].detach().clone().flatten(2).permute(0, 2, 1)
-        else:
-            prev_mask_features = mask_features.detach().clone().flatten(2).permute(0, 2, 1)
+        share = False #True
+        if share:
+            share_bt = len(x[0])
+            share_t = share_bt // bs
+
+        short_prop = False
+        if short_prop:
+            if self.training:
+                prev_mask_features = mask_features[0::2].detach().clone().flatten(2).permute(0, 2, 1)
+                curr_mask_features = mask_features[1::2].detach().clone().flatten(2).permute(0, 2, 1)
+            else:
+                prev_mask_features = mask_features[0::2].detach().clone()
+                if len(prev_mask_features) * 2 > len(mask_features):
+                    prev_mask_features = prev_mask_features[:-1]
+                mask_features[1::2] = prev_mask_features
 
         mask_features = mask_features.view(bs, t, c_m, h_m, w_m)
+        #short_mask_features = short_features.view(bs, t, c_m, h_m, w_m)
 
-        short_features = self.short_proj[0](short_features)
-        if self.training:
-            prev_short_features = short_features[0::2].flatten(2).permute(0, 2, 1)
-            curr_short_features = short_features[1::2].flatten(2).permute(0, 2, 1)
+        if short_prop:
+            short_features = self.short_proj[0](short_features)
+            if self.training:
+                prev_short_features = short_features[0::2].flatten(2).permute(0, 2, 1)
+                curr_short_features = short_features[1::2].flatten(2).permute(0, 2, 1)
 
-            curr_short_mask_features = self.short_attn(
-                curr_short_features, prev_short_features, prev_mask_features
-            )
-            curr_short_mask_features = curr_short_mask_features.view(bs, h_m, w_m, c_m).permute(0, 3, 1, 2).unsqueeze(0)
-
-            prev_short_mask_features = self.short_attn(
-                prev_short_features, curr_short_features, curr_mask_features
-            )
-            prev_short_mask_features = prev_short_mask_features.view(bs, h_m, w_m, c_m).permute(0, 3, 1, 2).unsqueeze(0)
-
-            short_mask_features = torch.cat((prev_short_mask_features, curr_short_mask_features), dim=0)
-            short_mask_features = short_mask_features.transpose(0, 1)
-        else:
-            short_mask_features = []
-            for i in range(0, t, 2):
-                prev_short_features = short_features[i:(i+1)].flatten(2).permute(0, 2, 1)
-                curr_short_features = short_features[(i+1):(i+2)].flatten(2).permute(0, 2, 1)
-                prev_short_mask_features = prev_mask_features[i:(i+1)]
                 curr_short_mask_features = self.short_attn(
-                    curr_short_features, prev_short_features, prev_short_mask_features
+                    curr_short_features, prev_short_features, prev_mask_features
                 )
-                short_mask_features.append(prev_short_mask_features)
-                short_mask_features.append(curr_short_mask_features)
-            short_mask_features = torch.cat(short_mask_features)
-            short_mask_features = short_mask_features.transpose(1,2).view(t, c_m, h_m, w_m).unsqueeze(0)
+                curr_short_mask_features = curr_short_mask_features.view(bs, h_m, w_m, c_m).permute(0, 3, 1, 2).unsqueeze(0)
+
+                prev_short_mask_features = self.short_attn(
+                    prev_short_features, curr_short_features, curr_mask_features
+                )
+                prev_short_mask_features = prev_short_mask_features.view(bs, h_m, w_m, c_m).permute(0, 3, 1, 2).unsqueeze(0)
+
+                short_mask_features = torch.cat((prev_short_mask_features, curr_short_mask_features), dim=0)
+                short_mask_features = short_mask_features.transpose(0, 1)
+            else:
+                short_mask_features = []
+                for i in range(0, t, 2):
+                    prev_short_features = short_features[i:(i+1)].flatten(2).permute(0, 2, 1)
+                    curr_short_features = short_features[(i+1):(i+2)].flatten(2).permute(0, 2, 1)
+                    prev_short_mask_features = prev_mask_features[i:(i+1)]
+                    curr_short_mask_features = self.short_attn(
+                        curr_short_features, prev_short_features, prev_short_mask_features
+                    )
+                    short_mask_features.append(prev_short_mask_features)
+                    short_mask_features.append(curr_short_mask_features)
+                short_mask_features = torch.cat(short_mask_features)
+                short_mask_features = short_mask_features.transpose(1,2).view(t, c_m, h_m, w_m).unsqueeze(0)
 
         if scale_mask_features is not None:
             bt, c_m, scale_h_m, scale_w_m = scale_mask_features.shape
@@ -504,13 +519,20 @@ class VideoMultiScaleMaskedTransformerDecoder(nn.Module):
 
         for i in range(self.num_feature_levels):
             size_list.append(x[i].shape[-2:])
-            pos.append(self.pe_layer(x[i].view(bs, t, -1, size_list[-1][0], size_list[-1][1]), None).flatten(3))
+            if share:
+                pos.append(self.pe_layer(x[i].view(bs, share_t, -1, size_list[-1][0], size_list[-1][1]), None).flatten(3))
+            else:
+                pos.append(self.pe_layer(x[i].view(bs, t, -1, size_list[-1][0], size_list[-1][1]), None).flatten(3))
             src.append(self.input_proj[i](x[i]).flatten(2) + self.level_embed.weight[i][None, :, None])
 
             # NTxCxHW => NxTxCxHW => (TxHW)xNxC
             _, c, hw = src[-1].shape
-            pos[-1] = pos[-1].view(bs, t, c, hw).permute(1, 3, 0, 2).flatten(0, 1)
-            src[-1] = src[-1].view(bs, t, c, hw).permute(1, 3, 0, 2).flatten(0, 1)
+            if share:
+                pos[-1] = pos[-1].view(bs, share_t, c, hw).permute(1, 3, 0, 2).flatten(0, 1)
+                src[-1] = src[-1].view(bs, share_t, c, hw).permute(1, 3, 0, 2).flatten(0, 1)
+            else:
+                pos[-1] = pos[-1].view(bs, t, c, hw).permute(1, 3, 0, 2).flatten(0, 1)
+                src[-1] = src[-1].view(bs, t, c, hw).permute(1, 3, 0, 2).flatten(0, 1)
 
         # QxNxC
         query_embed = self.query_embed.weight.unsqueeze(1).repeat(1, bs, 1)
@@ -591,20 +613,22 @@ class VideoMultiScaleMaskedTransformerDecoder(nn.Module):
                 ed = time.time()
                 mask_time += (ed - st)
 
-            if self.training:
-                if i == self.num_layers-1:
-                    short_outputs_mask = self.forward_mask_heads(output, short_mask_features)
-                    predictions_class.append(outputs_class)
-                    predictions_mask.append(short_outputs_mask)
+            if short_prop:
+                if self.training:
+                    if i == self.num_layers-1:
+                        short_outputs_mask = self.forward_mask_heads(output, short_mask_features)
+                        predictions_class.append(outputs_class)
+                        predictions_mask.append(short_outputs_mask)
 
             predictions_class.append(outputs_class)
             predictions_mask.append(outputs_mask)
 
-            if not self.training:
-                if i == self.num_layers-1:
-                    short_outputs_mask = self.forward_mask_heads(output, short_mask_features)
-                    predictions_class.append(outputs_class)
-                    predictions_mask.append(short_outputs_mask)
+            if short_prop:
+                if not self.training:
+                    if i == self.num_layers-1:
+                        short_outputs_mask = self.forward_mask_heads(output, short_mask_features)
+                        predictions_class.append(outputs_class)
+                        predictions_mask.append(short_outputs_mask)
 
         if TEST_TIME:
             print('cross time:', cross_time)
@@ -680,22 +704,34 @@ class VideoMultiScaleMaskedTransformerDecoder(nn.Module):
             ed = time.time()
             print('mask time:', ed - st)
 
+        share = False #True
+        gap = 2
         new_outputs_mask = []
+        share_t  = 0
         for i in range(t):
-            if i % 1 == 0:
-                new_outputs_mask.append(outputs_mask[:,:,i:(i+1)])
+            if share:
+                if i % gap == 0:
+                    new_outputs_mask.append(outputs_mask[:,:,i:(i+1)])
+                    share_t += 1
             else:
-                new_outputs_mask.append(scale_outputs_mask[:,:,i:(i+1)])
-        outputs_mask = torch.cat(new_outputs_mask, dim=2)
+                new_outputs_mask.append(outputs_mask[:,:,i:(i+1)])
+            #else:
+            #    new_outputs_mask.append(scale_outputs_mask[:,:,i:(i+1)])
+
+        if share:
+            t = share_t
+
+        new_outputs_mask = torch.cat(new_outputs_mask, dim=2)
 
         # NOTE: prediction is of higher-resolution
         # [B, Q, T, H, W] -> [B, Q, T*H*W] -> [B, h, Q, T*H*W] -> [B*h, Q, T*HW]
-        attn_mask = F.interpolate(outputs_mask.flatten(0, 1), size=attn_mask_target_size, mode="bilinear", align_corners=False).view(
+        attn_mask = F.interpolate(new_outputs_mask.flatten(0, 1), size=attn_mask_target_size, mode="bilinear", align_corners=False).view(
             b, q, t, attn_mask_target_size[0], attn_mask_target_size[1])
         # must use bool type
         # If a BoolTensor is provided, positions with ``True`` are not allowed to attend while ``False`` values will be unchanged.
         attn_mask = (attn_mask.sigmoid().flatten(2).unsqueeze(1).repeat(1, self.num_heads, 1, 1).flatten(0, 1) < 0.5).bool()
         attn_mask = attn_mask.detach()
+
 
         return outputs_class, outputs_mask, attn_mask
 
