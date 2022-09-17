@@ -59,8 +59,11 @@ class BasePixelDecoder(nn.Module):
         self.in_features = [k for k, v in input_shape]  # starting from "res2" to "res5"
         feature_channels = [v.channels for k, v in input_shape]
 
+        dual_path = False
+
         lateral_convs = []
-        light_lateral_convs = []
+        if dual_path:
+            light_lateral_convs = []
         output_convs = []
 
         use_bias = norm == ""
@@ -81,25 +84,28 @@ class BasePixelDecoder(nn.Module):
                 self.add_module("layer_{}".format(idx + 1), output_conv)
 
                 lateral_convs.append(None)
-                light_lateral_convs.append(None)
+                if dual_path:
+                    light_lateral_convs.append(None)
                 output_convs.append(output_conv)
             else:
-                lateral_norm = get_norm(norm, conv_dim // 2)
-                light_lateral_norm = get_norm(norm, conv_dim // 2)
+                lateral_norm = get_norm(norm, conv_dim)
+                if dual_path:
+                    light_lateral_norm = get_norm(norm, conv_dim)
                 output_norm = get_norm(norm, conv_dim)
 
                 lateral_conv = Conv2d(
-                    in_channels, conv_dim // 2, kernel_size=1, bias=use_bias, norm=lateral_norm
+                    in_channels, conv_dim, kernel_size=1, bias=use_bias, norm=lateral_norm
                 )
 
-                light_lateral_conv = Conv2d(
-                    in_channels, conv_dim // 2, kernel_size=1, bias=use_bias, norm=light_lateral_norm
-                )
+                if dual_path:
+                    light_lateral_conv = Conv2d(
+                        in_channels, conv_dim // 2, kernel_size=1, bias=use_bias, norm=light_lateral_norm
+                    )
 
 
                 output_conv = Conv2d(
-                    conv_dim,
-                    conv_dim,
+                    conv_dim ,
+                    conv_dim ,
                     kernel_size=3,
                     stride=1,
                     padding=1,
@@ -108,19 +114,25 @@ class BasePixelDecoder(nn.Module):
                     activation=F.relu,
                 )
                 weight_init.c2_xavier_fill(lateral_conv)
-                weight_init.c2_xavier_fill(light_lateral_conv)
+                if dual_path:
+                    weight_init.c2_xavier_fill(light_lateral_conv)
                 weight_init.c2_xavier_fill(output_conv)
                 self.add_module("adapter_{}".format(idx + 1), lateral_conv)
-                self.add_module("light_adapter_{}".format(idx + 1), light_lateral_conv)
+                if dual_path:
+                    self.add_module("light_adapter_{}".format(idx + 1), light_lateral_conv)
                 self.add_module("layer_{}".format(idx + 1), output_conv)
 
                 lateral_convs.append(lateral_conv)
-                light_lateral_convs.append(light_lateral_conv)
+                if dual_path:
+                    light_lateral_convs.append(light_lateral_conv)
                 output_convs.append(output_conv)
         # Place convs into top-down order (from low to high resolution)
         # to make the top-down computation in forward clearer.
         self.lateral_convs = lateral_convs[::-1]
-        self.light_lateral_convs = light_lateral_convs[::-1]
+
+        if dual_path:
+            self.light_lateral_convs = light_lateral_convs[::-1]
+
         self.output_convs = output_convs[::-1]
 
         self.mask_dim = mask_dim
@@ -253,6 +265,8 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
         feature_strides = [v.stride for k, v in input_shape]
         feature_channels = [v.channels for k, v in input_shape]
 
+        conv_dim = conv_dim
+
         in_channels = feature_channels[len(self.in_features) - 1]
         self.input_proj = Conv2d(in_channels, conv_dim, kernel_size=1)
         weight_init.c2_xavier_fill(self.input_proj)
@@ -285,6 +299,33 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
         self.add_module("layer_{}".format(len(self.in_features)), output_conv)
         self.output_convs[0] = output_conv
 
+        lateral_norm = get_norm(norm, conv_dim)
+
+        bottom_lateral_conv = Conv2d(
+            conv_dim, conv_dim, kernel_size=1, bias=use_bias, norm=lateral_norm
+        )
+        weight_init.c2_xavier_fill(bottom_lateral_conv)
+
+        self.add_module("bottom_lateral_conv", bottom_lateral_conv)
+
+        bottom_output_norm = get_norm(norm, conv_dim)
+        bottom_output_conv = Conv2d(
+            conv_dim * 2,
+            conv_dim,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            bias=use_bias,
+            norm=output_norm,
+            activation=F.relu,
+        )
+
+        weight_init.c2_xavier_fill(bottom_output_conv)
+        delattr(self, "layer_{}".format(1))
+        self.add_module("layer_{}".format(1), bottom_output_conv)
+        self.output_convs[-1] = bottom_output_conv
+
+
     @classmethod
     def from_config(cls, cfg, input_shape: Dict[str, ShapeSpec]):
         ret = super().from_config(cfg, input_shape)
@@ -300,14 +341,17 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
     def forward_features(self, features):
         multi_scale_features = []
         num_cur_levels = 0
+
+        dual_path = False
         # Reverse feature maps into top-down order (from low to high resolution)
         for idx, f in enumerate(self.in_features[::-1]):
             x = features[f]
             lateral_conv = self.lateral_convs[idx]
-            light_lateral_conv = self.light_lateral_convs[idx]
+            if dual_path:
+                light_lateral_conv = self.light_lateral_convs[idx]
             output_conv = self.output_convs[idx]
             gap = 1
-            if gap > 1:
+            if (gap > 1) and (dual_path):
                 T = len(x)
                 pt = T % gap
                 if pt == 0:
@@ -322,37 +366,49 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
                 #share_y = output_conv(transformer)
                 #y = torch.repeat_interleave(share_y, repeat_tensor, dim=0)
                 y = output_conv(transformer)
-                #share_y = y[0::gap]
 
                 # save intermediate feature as input to Transformer decoder
                 transformer_encoder_features = transformer
             else:
-                global_cur_fpn = lateral_conv(x)
-                light_cur_fpn = light_lateral_conv(x[0::gap])
 
-                if gap > 1:
+                global_cur_fpn = lateral_conv(x)
+                if dual_path:
+                    light_cur_fpn = light_lateral_conv(x[0::gap])
+
+                if (gap > 1) and (dual_path):
                     share_cur_fpn = torch.cat((global_cur_fpn[0::gap], light_cur_fpn), dim=1)
 
                     light_cur_fpn = torch.repeat_interleave(light_cur_fpn, repeat_tensor, dim=0)
-                #for j in range(1, pt):
-                #    light_cur_fpn[j::gap] = light_cur_fpn[0::gap]
-                #for j in range(pt, gap):
-                #    light_cur_fpn[j::gap] = light_cur_fpn[0::gap][:-1]
-                cur_fpn = torch.cat((global_cur_fpn, light_cur_fpn), dim=1)
+
+                if dual_path:
+                    cur_fpn = torch.cat((global_cur_fpn, light_cur_fpn), dim=1)
+                else:
+                    cur_fpn = global_cur_fpn
+
 
                 # Following FPN implementation, we use nearest upsampling here
-                y = cur_fpn + F.interpolate(y, size=cur_fpn.shape[-2:], mode="nearest")
+                if idx == len(self.in_features)-1:
+                    bottom_fpn = self.bottom_lateral_conv(x)
+                    y = cur_fpn + F.interpolate(y, size=cur_fpn.shape[-2:], mode="nearest")
+                    y = torch.cat((y, bottom_fpn), dim=1)
+                else:
+                    y = cur_fpn + F.interpolate(y, size=cur_fpn.shape[-2:], mode="nearest")
+
                 y = output_conv(y)
 
+                '''
                 if gap > 1:
                     share_y = share_cur_fpn + F.interpolate(share_y, size=share_cur_fpn.shape[-2:], mode="nearest")
                     share_y = output_conv(share_y)
+                '''
 
             if num_cur_levels < self.maskformer_num_feature_levels:
+                '''
                 if gap > 1:
                     multi_scale_features.append(share_y)
                 else:
-                    multi_scale_features.append(y)
+                '''
+                multi_scale_features.append(y)
                 num_cur_levels += 1
 
         return self.mask_features(y), transformer_encoder_features, multi_scale_features
