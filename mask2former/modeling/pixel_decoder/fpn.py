@@ -308,6 +308,15 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
 
         self.add_module("bottom_lateral_conv", bottom_lateral_conv)
 
+        c4_lateral_norm = get_norm(norm, conv_dim)
+
+        c4_lateral_conv = Conv2d(
+            conv_dim*2, conv_dim, kernel_size=1, bias=use_bias, norm=lateral_norm
+        )
+        weight_init.c2_xavier_fill(c4_lateral_conv)
+
+        self.add_module("c4_lateral_conv", c4_lateral_conv)
+
         bottom_output_norm = get_norm(norm, conv_dim)
         bottom_output_conv = Conv2d(
             conv_dim * 2,
@@ -324,6 +333,23 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
         delattr(self, "layer_{}".format(1))
         self.add_module("layer_{}".format(1), bottom_output_conv)
         self.output_convs[-1] = bottom_output_conv
+
+        c4_output_norm = get_norm(norm, conv_dim)
+        c4_output_conv = Conv2d(
+            conv_dim * 2,
+            conv_dim,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            bias=use_bias,
+            norm=output_norm,
+            activation=F.relu,
+        )
+
+        weight_init.c2_xavier_fill(c4_output_conv)
+        delattr(self, "layer_{}".format(2))
+        self.add_module("layer_{}".format(2), c4_output_conv)
+        self.output_convs[-2] = c4_output_conv
 
 
     @classmethod
@@ -350,8 +376,8 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
             if dual_path:
                 light_lateral_conv = self.light_lateral_convs[idx]
             output_conv = self.output_convs[idx]
-            gap = 1
-            if (gap > 1) and (dual_path):
+            gap = 2
+            if (gap > 1):
                 T = len(x)
                 pt = T % gap
                 if pt == 0:
@@ -390,7 +416,15 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
                 if idx == len(self.in_features)-1:
                     bottom_fpn = self.bottom_lateral_conv(x)
                     y = cur_fpn + F.interpolate(y, size=cur_fpn.shape[-2:], mode="nearest")
+                    y = y[0::gap]
+                    y = torch.repeat_interleave(y, repeat_tensor, dim=0)
                     y = torch.cat((y, bottom_fpn), dim=1)
+                elif idx == len(self.in_features)-2:
+                    c4_fpn = self.c4_lateral_conv(x)
+                    y = cur_fpn + F.interpolate(y, size=cur_fpn.shape[-2:], mode="nearest")
+                    y = y[0::gap]
+                    y = torch.repeat_interleave(y, repeat_tensor, dim=0)
+                    y = torch.cat((y, c4_fpn), dim=1)
                 else:
                     y = cur_fpn + F.interpolate(y, size=cur_fpn.shape[-2:], mode="nearest")
 
