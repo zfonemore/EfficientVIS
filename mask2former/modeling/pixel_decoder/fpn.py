@@ -308,6 +308,7 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
 
         self.add_module("bottom_lateral_conv", bottom_lateral_conv)
 
+        '''
         c4_lateral_norm = get_norm(norm, conv_dim)
 
         c4_lateral_conv = Conv2d(
@@ -350,6 +351,7 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
         delattr(self, "layer_{}".format(2))
         self.add_module("layer_{}".format(2), c4_output_conv)
         self.output_convs[-2] = c4_output_conv
+        '''
 
 
     @classmethod
@@ -376,7 +378,7 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
             if dual_path:
                 light_lateral_conv = self.light_lateral_convs[idx]
             output_conv = self.output_convs[idx]
-            gap = 2
+            gap = 1
             if (gap > 1):
                 T = len(x)
                 pt = T % gap
@@ -415,18 +417,19 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
                 # Following FPN implementation, we use nearest upsampling here
                 if idx == len(self.in_features)-1:
                     bottom_fpn = self.bottom_lateral_conv(x)
+                    y = cur_fpn + bottom_fpn + F.interpolate(y, size=cur_fpn.shape[-2:], mode="nearest")
+                    #y = y[0::gap]
+                    #y = torch.repeat_interleave(y, repeat_tensor, dim=0)
+                else:
                     y = cur_fpn + F.interpolate(y, size=cur_fpn.shape[-2:], mode="nearest")
-                    y = y[0::gap]
-                    y = torch.repeat_interleave(y, repeat_tensor, dim=0)
-                    y = torch.cat((y, bottom_fpn), dim=1)
+                '''
                 elif idx == len(self.in_features)-2:
                     c4_fpn = self.c4_lateral_conv(x)
                     y = cur_fpn + F.interpolate(y, size=cur_fpn.shape[-2:], mode="nearest")
-                    y = y[0::gap]
-                    y = torch.repeat_interleave(y, repeat_tensor, dim=0)
+                    #y = y[0::gap]
+                    #y = torch.repeat_interleave(y, repeat_tensor, dim=0)
                     y = torch.cat((y, c4_fpn), dim=1)
-                else:
-                    y = cur_fpn + F.interpolate(y, size=cur_fpn.shape[-2:], mode="nearest")
+                '''
 
                 y = output_conv(y)
 
