@@ -178,18 +178,13 @@ class VideoMaskFormer(nn.Module):
                         Each dict contains keys "id", "category_id", "isthing".
         """
         images = []
-        scale_images = []
         for video in batched_inputs:
-            for frame, scale_frame in zip(video["image"], video["scale_image"]):
+            for frame in video["image"]:
                 images.append(frame.to(self.device))
-                scale_images.append(scale_frame.to(self.device))
 
         images = [(x - self.pixel_mean) / self.pixel_std for x in images]
         images = ImageList.from_tensors(images, self.size_divisibility)
 
-
-        scale_images = [(x - self.pixel_mean) / self.pixel_std for x in scale_images]
-        scale_images = ImageList.from_tensors(scale_images, self.size_divisibility)
 
         TEST_TIME = False
 
@@ -198,8 +193,25 @@ class VideoMaskFormer(nn.Module):
             torch.cuda.synchronize()
             st = time.time()
 
-        features = self.backbone(images.tensor)
-        #scale_features = self.backbone(scale_images.tensor)
+        images_tensor = images.tensor
+        ori_image_size = images_tensor.shape[-2:]
+        scale_image_size = (ori_image_size[0] // 2, ori_image_size[1] // 2)
+        #scale_images_tensor = F.interpolate(scale_images_tensor, size=ori_image_size, mode="nearest")
+        #images_tensor[1::gap] = scale_images_tensor
+
+        gap = 2
+        if gap > 1:
+            scale_images_tensor = F.interpolate(images_tensor, size=scale_image_size, mode="nearest")
+            highres_images = images_tensor
+            lowres_images = scale_images_tensor
+            highres_features = self.backbone(highres_images)
+            lowres_features = self.backbone(lowres_images)
+            outputs = self.sem_seg_head(highres_features, lowres_features)
+        else:
+            scale_images_tensor = F.interpolate(images_tensor, size=scale_image_size, mode="nearest")
+            features = self.backbone(scale_images_tensor)
+            outputs = self.sem_seg_head(features)
+
 
         if TEST_TIME:
             torch.cuda.synchronize()
@@ -209,7 +221,6 @@ class VideoMaskFormer(nn.Module):
             torch.cuda.synchronize()
             st = time.time()
 
-        outputs = self.sem_seg_head(features)
 
         if TEST_TIME:
             torch.cuda.synchronize()
