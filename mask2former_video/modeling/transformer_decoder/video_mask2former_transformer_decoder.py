@@ -444,9 +444,7 @@ class VideoMultiScaleMaskedTransformerDecoder(nn.Module):
 
         return ret
 
-    def forward(self, x, mask_features, mask = None, scale_x = None, scale_mask_features = None, short_features = None):
-
-
+    def forward(self, x, mask_features, mask = None, index = None, scale_x = None, scale_mask_features = None, short_features = None):
 
         bt, c_m, h_m, w_m = mask_features.shape
 
@@ -542,7 +540,7 @@ class VideoMultiScaleMaskedTransformerDecoder(nn.Module):
         predictions_mask = []
 
         # prediction heads on learnable query features
-        outputs_class, outputs_mask, attn_mask = self.forward_prediction_heads(output, mask_features, scale_mask_features, attn_mask_target_size=size_list[0])
+        outputs_class, outputs_mask, attn_mask = self.forward_prediction_heads(output, mask_features, scale_mask_features, attn_mask_target_size=size_list[0], index=index)
         predictions_class.append(outputs_class)
         predictions_mask.append(outputs_mask)
 
@@ -606,7 +604,7 @@ class VideoMultiScaleMaskedTransformerDecoder(nn.Module):
                 torch.cuda.synchronize()
                 st = time.time()
 
-            outputs_class, outputs_mask, attn_mask = self.forward_prediction_heads(output, mask_features, scale_mask_features, attn_mask_target_size=size_list[(i + 1) % self.num_feature_levels])
+            outputs_class, outputs_mask, attn_mask = self.forward_prediction_heads(output, mask_features, scale_mask_features, attn_mask_target_size=size_list[(i + 1) % self.num_feature_levels], index=index)
 
             if TEST_TIME:
                 torch.cuda.synchronize()
@@ -668,7 +666,7 @@ class VideoMultiScaleMaskedTransformerDecoder(nn.Module):
 
 
 
-    def forward_prediction_heads(self, output, mask_features, scale_mask_features, attn_mask_target_size):
+    def forward_prediction_heads(self, output, mask_features, scale_mask_features, attn_mask_target_size, index=None):
         decoder_output = self.decoder_norm(output)
         decoder_output = decoder_output.transpose(0, 1)
         outputs_class = self.class_embed(decoder_output)
@@ -705,12 +703,11 @@ class VideoMultiScaleMaskedTransformerDecoder(nn.Module):
             print('mask time:', ed - st)
 
         share = True
-        gap = 4
         new_outputs_mask = []
         share_t  = 0
         for i in range(t):
             if share:
-                if i % gap == 0:
+                if index[i]:
                     new_outputs_mask.append(outputs_mask[:,:,i:(i+1)])
                     share_t += 1
             else:

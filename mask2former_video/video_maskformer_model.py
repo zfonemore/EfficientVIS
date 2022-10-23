@@ -182,6 +182,9 @@ class VideoMaskFormer(nn.Module):
             for frame in video["image"]:
                 images.append(frame.to(self.device))
 
+        batch_size = len(batched_inputs)
+        video_len = len(video["image"])
+
         images = [(x - self.pixel_mean) / self.pixel_std for x in images]
         images = ImageList.from_tensors(images, self.size_divisibility)
 
@@ -196,21 +199,28 @@ class VideoMaskFormer(nn.Module):
         images_tensor = images.tensor
         ori_image_size = images_tensor.shape[-2:]
         scale_image_size = (ori_image_size[0] // 2, ori_image_size[1] // 2)
-        #scale_images_tensor = F.interpolate(scale_images_tensor, size=ori_image_size, mode="nearest")
-        #images_tensor[1::gap] = scale_images_tensor
 
         gap = 2
         if gap > 1:
-            scale_images_tensor = F.interpolate(images_tensor, size=scale_image_size, mode="nearest")
-            highres_images = images_tensor
+            index = torch.zeros(len(images_tensor), dtype=torch.bool)
+
+            current_frame = 0
+            for i in range(batch_size):
+                index[current_frame:(current_frame+video_len):gap] = True
+                current_frame += video_len
+
+            scale_images_tensor = F.interpolate(images_tensor[~index], size=scale_image_size, mode="nearest")
             lowres_images = scale_images_tensor
-            highres_features = self.backbone(highres_images)
+
+            highres_images = images_tensor
+
+            highres_features = self.backbone(highres_images, index=index)
             lowres_features = self.backbone(lowres_images)
-            outputs = self.sem_seg_head(highres_features, lowres_features)
+
+            outputs, loss_kd = self.sem_seg_head(highres_features, lowres_features, index)
         else:
-            scale_images_tensor = F.interpolate(images_tensor, size=scale_image_size, mode="nearest")
-            features = self.backbone(scale_images_tensor)
-            outputs = self.sem_seg_head(features)
+            features = self.backbone(images_tensor)
+            outputs, loss_kd = self.sem_seg_head(features)
 
 
         if TEST_TIME:
@@ -240,6 +250,9 @@ class VideoMaskFormer(nn.Module):
                 else:
                     # remove this loss if not specified in `weight_dict`
                     losses.pop(k)
+
+            if loss_kd > 0:
+                losses['loss_kd'] = loss_kd
             return losses
         else:
             mask_cls_results = outputs["pred_logits"]

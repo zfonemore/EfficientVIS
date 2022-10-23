@@ -112,17 +112,17 @@ class MaskFormerHead(nn.Module):
             ),
         }
 
-    def forward(self, features, scale_features=None, mask=None):
-        return self.layers(features, scale_features, mask)
+    def forward(self, features, scale_features=None, index=None, mask=None):
+        return self.layers(features, scale_features, index, mask)
 
-    def layers(self, features, scale_features=None, mask=None):
+    def layers(self, features, scale_features=None, index=None, mask=None):
         TEST_TIME = False
         if TEST_TIME:
             import time, torch
             torch.cuda.synchronize()
             st = time.time()
 
-        mask_features, transformer_encoder_features, multi_scale_features = self.pixel_decoder.forward_features(features, scale_features)
+        mask_features, transformer_encoder_features, multi_scale_features, loss_kd = self.pixel_decoder.forward_features(features, scale_features, index)
 
         short_features = features['res2'].detach()
 
@@ -133,26 +133,6 @@ class MaskFormerHead(nn.Module):
 
         if scale_features is not None:
             pass
-            '''
-            scale_mask_features, scale_transformer_encoder_features, scale_multi_scale_features = self.pixel_decoder.forward_features(scale_features)
-            scale_mask_features = F.interpolate(scale_mask_features, size=mask_features.shape[-2:], mode="nearest")
-            t1, c, h, w = mask_features.shape
-            t2, c, h, w = scale_mask_features.shape
-            new_mask_features = mask_features.new_zeros((t1+t2, c, h, w))
-            gap = 2
-            new_mask_features[0::gap] = mask_features
-            new_mask_features[1::gap] = scale_mask_features
-            new_multi_scale_features = []
-            for ms_features, scale_ms_features in zip(multi_scale_features, scale_multi_scale_features):
-                scale_ms_features = F.interpolate(scale_ms_features, size=ms_features.shape[-2:], mode="nearest")
-                t1, c, h, w = ms_features.shape
-                t2, c, h, w = scale_ms_features.shape
-                new_ms_features = ms_features.new_zeros((t1+t2, c, h, w))
-                gap = 2
-                new_ms_features[0::gap] = ms_features
-                new_ms_features[1::gap] = scale_ms_features
-                new_multi_scale_features.append(new_ms_features)
-            '''
         else:
             scale_mask_features, scale_multi_scale_features = None, None
 
@@ -161,7 +141,7 @@ class MaskFormerHead(nn.Module):
             torch.cuda.synchronize()
             st = time.time()
         if self.transformer_in_feature == "multi_scale_pixel_decoder":
-            predictions = self.predictor(multi_scale_features, mask_features, mask)
+            predictions = self.predictor(multi_scale_features, mask_features, mask, index)
         else:
             if self.transformer_in_feature == "transformer_encoder":
                 assert (
@@ -177,4 +157,4 @@ class MaskFormerHead(nn.Module):
             torch.cuda.synchronize()
             ed = time.time()
             print('trans decoder time:', ed - st)
-        return predictions
+        return predictions, loss_kd

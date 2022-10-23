@@ -214,7 +214,6 @@ class YTVISDatasetMapper:
                 ids[_id] = i
 
         dataset_dict["image"] = []
-        dataset_dict["scale_image"] = []
         dataset_dict["instances"] = []
         dataset_dict["file_names"] = []
         for frame_idx in selected_idx:
@@ -231,18 +230,24 @@ class YTVISDatasetMapper:
 
             image_shape = image.shape[:2]  # h, w
 
+            '''
             scale_input = copy.deepcopy(aug_input)
             # scale down image
-            scale_trans = T.ResizeScale(0.75, 0.75, image_shape[0], image_shape[1])
+            scale_trans = T.ResizeScale(0.5, 0.5, image_shape[0], image_shape[1])
             trans = scale_trans(scale_input)
+            scale_image_shape = scale_input.image.shape[:2]  # h, w
+
+            # scale up image
+            scale_trans_up = T.ResizeScale(2, 2, scale_image_shape[0], scale_image_shape[1])
+            trans = scale_trans_up(scale_input)
+
             scale_image = scale_input.image
+            '''
 
             # Pytorch's dataloader is efficient on torch.Tensor due to shared-memory,
             # but not efficient on large generic data structures due to the use of pickle & mp.Queue.
             # Therefore it's important to use torch.Tensor.
             dataset_dict["image"].append(torch.as_tensor(np.ascontiguousarray(image.transpose(2, 0, 1))))
-
-            dataset_dict["scale_image"].append(torch.as_tensor(np.ascontiguousarray(scale_image.transpose(2, 0, 1))))
 
             if (video_annos is None) or (not self.is_train):
                 continue

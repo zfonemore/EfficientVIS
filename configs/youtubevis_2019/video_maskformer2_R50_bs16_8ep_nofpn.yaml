@@ -1,5 +1,8 @@
 _BASE_: Base-YouTubeVIS-VideoInstanceSegmentation.yaml
 MODEL:
+  BACKBONE:
+    FREEZE_AT: 0
+    NAME: "build_resnetlow_backbone"
   WEIGHTS: "model_final_3c8ec9.pkl"
   META_ARCHITECTURE: "VideoMaskFormer"
   SEM_SEG_HEAD:
