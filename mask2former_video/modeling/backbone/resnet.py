@@ -446,12 +446,8 @@ class ResNet(Backbone):
             outputs["stem"] = x
 
         for name, stage in zip(self.stage_names, self.stages):
-            if low:
-                if (name == 'res5'):
-                    continue
-            else:
-                if (name == 'res4') and (index is not None):
-                    x = x[index]
+            if (name == 'res4') and (index is not None):
+                x = x[index]
             x = stage(x)
             if name in self._out_features:
                 outputs[name] = x

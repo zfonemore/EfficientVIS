@@ -293,11 +293,10 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
         # Reverse feature maps into top-down order (from low to high resolution)
         for idx, f in enumerate(self.in_features[::-1]):
             x = features[f]
-            if idx > 0:
-                if low_features is not None:
-                    low_x = low_features[f]
-                else:
-                    low_x = None
+            if low_features is not None:
+                low_x = low_features[f]
+            else:
+                low_x = None
 
             lateral_conv = self.lateral_convs[idx]
             output_conv = self.output_convs[idx]
@@ -309,8 +308,14 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
 
                 # save intermediate feature as input to Transformer decoder
                 transformer_encoder_features = transformer
+
+                if low_x is not None:
+                    low_transformer = self.input_proj(low_x)
+                    low_pos = self.pe_layer(low_x)
+                    low_transformer = self.transformer(low_transformer, None, low_pos)
+                    low_y = output_conv(low_transformer)
             else:
-                if idx == 3:
+                if idx != 2:
                     cur_fpn = lateral_conv(x)
                     # Following FPN implementation, we use nearest upsampling here
 
@@ -318,32 +323,12 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
                     y = output_conv(y)
 
                     if low_x is not None:
-                        if idx == 2:
+                        if idx < 2:
                             low_cur_fpn = lateral_conv(low_x)
                             # Following FPN implementation, we use nearest upsampling here
 
                             low_y = low_cur_fpn + F.interpolate(low_y, size=low_cur_fpn.shape[-2:], mode="nearest")
                             low_y = output_conv(low_y)
-                elif idx == 1:
-                    cur_fpn = lateral_conv(x)
-                    # gap low resolution combine
-                    if low_x is not None:
-                        low_cur_fpn = lateral_conv(low_x)
-                        # Following FPN implementation, we use nearest upsampling here
-
-                        if self.training:
-                            low_y = low_cur_fpn + y[index]
-                        else:
-                            if len(y) == len(low_x):
-                                low_y = low_cur_fpn + y
-                            else:
-                                low_y = low_cur_fpn + y[:-1]
-                        low_y = output_conv(low_y)
-
-                    y = F.interpolate(y, size=cur_fpn.shape[-2:], mode="nearest")
-                    y = cur_fpn + y
-
-                    y = output_conv(y)
                 elif idx == 2:
                     cur_fpn = lateral_conv(x)
                     # gap low resolution combine
