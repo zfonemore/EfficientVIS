@@ -431,7 +431,7 @@ class ResNet(Backbone):
             assert out_feature in children, "Available children: {}".format(", ".join(children))
         self.freeze(freeze_at)
 
-    def forward(self, x, index=None):
+    def forward(self, x, index=None, low=False):
         """
         Args:
             x: Tensor of shape (N,C,H,W). H, W must be a multiple of ``self.size_divisibility``.
@@ -446,8 +446,12 @@ class ResNet(Backbone):
             outputs["stem"] = x
 
         for name, stage in zip(self.stage_names, self.stages):
-            if (name == 'res4') and (index is not None):
-                x = x[index]
+            if low:
+                if (name == 'res5'):
+                    continue
+            else:
+                if (name == 'res4') and (index is not None):
+                    x = x[index]
             x = stage(x)
             if name in self._out_features:
                 outputs[name] = x

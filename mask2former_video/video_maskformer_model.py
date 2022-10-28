@@ -214,8 +214,11 @@ class VideoMaskFormer(nn.Module):
 
             highres_images = images_tensor
 
-            highres_features = self.backbone(highres_images, index=index)
-            lowres_features = self.backbone(lowres_images)
+            if self.training:
+                highres_features = self.backbone(highres_images)
+            else:
+                highres_features = self.backbone(highres_images, index=index)
+            lowres_features = self.backbone(lowres_images, low=True)
 
             outputs, loss_kd = self.sem_seg_head(highres_features, lowres_features, index)
         else:

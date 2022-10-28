@@ -451,7 +451,11 @@ class VideoMultiScaleMaskedTransformerDecoder(nn.Module):
         bs = bt // self.num_frames if self.training else 1
         t = bt // bs
 
-        share = True
+        if self.training:
+            share = False
+        else:
+            share = True
+
         if share:
             share_bt = len(x[0])
             share_t = share_bt // bs
@@ -702,7 +706,10 @@ class VideoMultiScaleMaskedTransformerDecoder(nn.Module):
             ed = time.time()
             print('mask time:', ed - st)
 
-        share = True
+        if self.training:
+            share = False
+        else:
+            share = True
         new_outputs_mask = []
         share_t  = 0
         for i in range(t):

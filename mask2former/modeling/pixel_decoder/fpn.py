@@ -272,15 +272,6 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
         self.add_module("layer_{}".format(len(self.in_features)), output_conv)
         self.output_convs[0] = output_conv
 
-        '''
-        lateral_norm = get_norm(norm, conv_dim)
-        bottom_lateral_conv = Conv2d(
-            conv_dim * 2, conv_dim, kernel_size=1, bias=use_bias, norm=lateral_norm
-        )
-        weight_init.c2_xavier_fill(bottom_lateral_conv)
-
-        self.add_module("bottom_lateral_conv", bottom_lateral_conv)
-        '''
 
     @classmethod
     def from_config(cls, cfg, input_shape: Dict[str, ShapeSpec]):
@@ -297,13 +288,16 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
     def forward_features(self, features, low_features=None, index=None):
         multi_scale_features = []
         num_cur_levels = 0
+
+        loss_kd = 0
         # Reverse feature maps into top-down order (from low to high resolution)
         for idx, f in enumerate(self.in_features[::-1]):
             x = features[f]
-            if low_features is not None:
-                low_x = low_features[f]
-            else:
-                low_x = None
+            if idx > 0:
+                if low_features is not None:
+                    low_x = low_features[f]
+                else:
+                    low_x = None
 
             lateral_conv = self.lateral_convs[idx]
             output_conv = self.output_convs[idx]
@@ -315,15 +309,8 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
 
                 # save intermediate feature as input to Transformer decoder
                 transformer_encoder_features = transformer
-
-                if low_x is not None:
-                    # low resolution features
-                    low_transformer = self.input_proj(low_x)
-                    low_pos = self.pe_layer(low_x)
-                    low_transformer = self.transformer(low_transformer, None, low_pos)
-                    low_y = output_conv(low_transformer)
             else:
-                if idx != 2:
+                if idx == 3:
                     cur_fpn = lateral_conv(x)
                     # Following FPN implementation, we use nearest upsampling here
 
@@ -331,46 +318,61 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
                     y = output_conv(y)
 
                     if low_x is not None:
-                        if idx <= 2:
+                        if idx == 2:
                             low_cur_fpn = lateral_conv(low_x)
                             # Following FPN implementation, we use nearest upsampling here
 
                             low_y = low_cur_fpn + F.interpolate(low_y, size=low_cur_fpn.shape[-2:], mode="nearest")
                             low_y = output_conv(low_y)
-                else:
+                elif idx == 1:
+                    cur_fpn = lateral_conv(x)
+                    # gap low resolution combine
+                    if low_x is not None:
+                        low_cur_fpn = lateral_conv(low_x)
+                        # Following FPN implementation, we use nearest upsampling here
+
+                        if self.training:
+                            low_y = low_cur_fpn + y[index]
+                        else:
+                            if len(y) == len(low_x):
+                                low_y = low_cur_fpn + y
+                            else:
+                                low_y = low_cur_fpn + y[:-1]
+                        low_y = output_conv(low_y)
+
+                    y = F.interpolate(y, size=cur_fpn.shape[-2:], mode="nearest")
+                    y = cur_fpn + y
+
+                    y = output_conv(y)
+                elif idx == 2:
                     cur_fpn = lateral_conv(x)
                     # gap low resolution combine
                     y = F.interpolate(y, size=cur_fpn.shape[-2:], mode="nearest")
-                    if low_x is not None:
-                        low_y = F.interpolate(low_y, size=cur_fpn.shape[-2:], mode="nearest")
-                        combine_shape = (len(y)+len(low_y), low_y.shape[1], low_y.shape[2], low_y.shape[3])
-                        combine_y = low_y.new_zeros(combine_shape)
+                    low_y = F.interpolate(low_y, size=cur_fpn.shape[-2:], mode="nearest")
+                    combine_shape = (len(index), low_y.shape[1], low_y.shape[2], low_y.shape[3])
+                    combine_y = low_y.new_zeros(combine_shape)
 
-                        if self.training:
-                            loss_kd = 0 #10 * F.mse_loss(low_y, y.detach())
-                        else:
-                            loss_kd = 0
-
+                    if self.training:
+                        combine_y[index] = y[index]
+                    else:
                         combine_y[index] = y
-                        combine_y[~index] = low_y
-                        #combine_y[2::gap] = low_y[1::(gap-1)]
-                        #combine_y[3::gap] = low_y[2::(gap-1)]
-                        y = cur_fpn + combine_y
+                    combine_y[~index] = low_y
+
+                    y = cur_fpn + combine_y
+                    y = output_conv(y)
+                    if self.training:
+                        loss_kd = 0
                     else:
                         loss_kd = 0
 
-                        y = cur_fpn + y
-
-                    y = output_conv(y)
-
             if num_cur_levels < self.maskformer_num_feature_levels:
-                if low_x is not None:
-                    if idx < 2:
+                if idx < 2:
+                    multi_scale_features.append(y)
+                else:
+                    if self.training:
                         multi_scale_features.append(y)
                     else:
                         multi_scale_features.append(y[index])
-                else:
-                    multi_scale_features.append(y)
                 num_cur_levels += 1
         return self.mask_features(y), transformer_encoder_features, multi_scale_features, loss_kd
 
