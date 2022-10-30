@@ -339,8 +339,9 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
 
                     if self.training:
                         combine_y[index] = y[index]
+                        #combine_y[index] = y
                     else:
-                        combine_y[index] = y
+                        combine_y[index] = y[index]
                     combine_y[~index] = low_y
 
                     y = cur_fpn + combine_y
@@ -352,10 +353,10 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
 
             if num_cur_levels < self.maskformer_num_feature_levels:
                 if idx < 2:
-                    multi_scale_features.append(y)
+                    multi_scale_features.append(y[index])
                 else:
                     if self.training:
-                        multi_scale_features.append(y)
+                        multi_scale_features.append(y[index])
                     else:
                         multi_scale_features.append(y[index])
                 num_cur_levels += 1

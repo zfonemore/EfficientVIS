@@ -707,7 +707,7 @@ class VideoMultiScaleMaskedTransformerDecoder(nn.Module):
             print('mask time:', ed - st)
 
         if self.training:
-            share = False
+            share = False #True
         else:
             share = True
         new_outputs_mask = []
