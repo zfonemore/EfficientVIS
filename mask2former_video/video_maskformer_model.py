@@ -201,6 +201,7 @@ class VideoMaskFormer(nn.Module):
         scale_image_size = (ori_image_size[0] // 2, ori_image_size[1] // 2)
 
         gap = 2
+        half_fuse = True
         if gap > 1:
             index = torch.zeros(len(images_tensor), dtype=torch.bool)
 
@@ -212,15 +213,22 @@ class VideoMaskFormer(nn.Module):
             scale_images_tensor = F.interpolate(images_tensor[~index], size=scale_image_size, mode="nearest")
             lowres_images = scale_images_tensor
 
-            highres_images = images_tensor
+            if half_fuse:
+                highres_images = images_tensor
+            else:
+                highres_images = images_tensor[index]
 
             if self.training:
-                highres_features = self.backbone(highres_images)
-                #highres_features = self.backbone(highres_images, index=index)
+                if half_fuse:
+                    highres_features = self.backbone(highres_images, index=index)
+                else:
+                    highres_features = self.backbone(highres_images)
             else:
-                highres_features = self.backbone(highres_images)
-                #highres_features = self.backbone(highres_images, index=index)
-            lowres_features = self.backbone(lowres_images, low=True)
+                if half_fuse:
+                    highres_features = self.backbone(highres_images, index=index)
+                else:
+                    highres_features = self.backbone(highres_images)
+            lowres_features = self.backbone(lowres_images)
 
             outputs, loss_kd = self.sem_seg_head(highres_features, lowres_features, index)
         else:

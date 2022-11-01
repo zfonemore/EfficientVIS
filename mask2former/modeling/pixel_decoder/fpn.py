@@ -272,6 +272,7 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
         self.add_module("layer_{}".format(len(self.in_features)), output_conv)
         self.output_convs[0] = output_conv
 
+        low_norm = get_norm(norm, conv_dim)
 
     @classmethod
     def from_config(cls, cfg, input_shape: Dict[str, ShapeSpec]):
@@ -288,6 +289,8 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
     def forward_features(self, features, low_features=None, index=None):
         multi_scale_features = []
         num_cur_levels = 0
+
+        half_fuse = True
 
         loss_kd = 0
         # Reverse feature maps into top-down order (from low to high resolution)
@@ -315,7 +318,7 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
                     low_transformer = self.transformer(low_transformer, None, low_pos)
                     low_y = output_conv(low_transformer)
             else:
-                if idx != 2:
+                if not half_fuse:
                     cur_fpn = lateral_conv(x)
                     # Following FPN implementation, we use nearest upsampling here
 
@@ -323,44 +326,76 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
                     y = output_conv(y)
 
                     if low_x is not None:
-                        if idx < 2:
-                            low_cur_fpn = lateral_conv(low_x)
-                            # Following FPN implementation, we use nearest upsampling here
+                        low_cur_fpn = lateral_conv(low_x)
+                        # Following FPN implementation, we use nearest upsampling here
 
-                            low_y = low_cur_fpn + F.interpolate(low_y, size=low_cur_fpn.shape[-2:], mode="nearest")
-                            low_y = output_conv(low_y)
-                elif idx == 2:
-                    cur_fpn = lateral_conv(x)
-                    # gap low resolution combine
-                    y = F.interpolate(y, size=cur_fpn.shape[-2:], mode="nearest")
-                    low_y = F.interpolate(low_y, size=cur_fpn.shape[-2:], mode="nearest")
-                    combine_shape = (len(index), low_y.shape[1], low_y.shape[2], low_y.shape[3])
-                    combine_y = low_y.new_zeros(combine_shape)
+                        low_y = low_cur_fpn + F.interpolate(low_y, size=low_cur_fpn.shape[-2:], mode="nearest")
+                        low_y = output_conv(low_y)
+                else:
+                    if idx != 1:
+                        cur_fpn = lateral_conv(x)
+                        # Following FPN implementation, we use nearest upsampling here
 
-                    if self.training:
-                        combine_y[index] = y[index]
-                        #combine_y[index] = y
-                    else:
-                        combine_y[index] = y[index]
-                    combine_y[~index] = low_y
+                        y = cur_fpn + F.interpolate(y, size=cur_fpn.shape[-2:], mode="nearest")
+                        y = output_conv(y)
 
-                    y = cur_fpn + combine_y
-                    y = output_conv(y)
-                    if self.training:
-                        loss_kd = 0
-                    else:
-                        loss_kd = 0
+                        if low_x is not None:
+                            if idx < 1:
+                                low_cur_fpn = lateral_conv(low_x)
+                                # Following FPN implementation, we use nearest upsampling here
+
+                                low_y = low_cur_fpn + F.interpolate(low_y, size=low_cur_fpn.shape[-2:], mode="nearest")
+                                low_y = output_conv(low_y)
+                    elif idx == 1:
+                        cur_fpn = lateral_conv(x)
+                        # gap low resolution combine
+                        y = F.interpolate(y, size=cur_fpn.shape[-2:], mode="nearest")
+                        low_y = F.interpolate(low_y, size=cur_fpn.shape[-2:], mode="nearest")
+                        combine_shape = (len(index), low_y.shape[1], low_y.shape[2], low_y.shape[3])
+                        combine_y = low_y.new_zeros(combine_shape)
+
+                        if self.training:
+                            combine_y[index] = y
+                        else:
+                            combine_y[index] = y
+                        combine_y[~index] = low_y
+
+                        y = cur_fpn + combine_y
+                        y = output_conv(y)
+                        if self.training:
+                            loss_kd = 0
+                        else:
+                            loss_kd = 0
 
             if num_cur_levels < self.maskformer_num_feature_levels:
-                if idx < 2:
-                    multi_scale_features.append(y[index])
+                if idx < 1:
+                    combine_low_y = F.interpolate(low_y, size=y.shape[-2:], mode="nearest")
+                    combine_shape = (len(index), y.shape[1], y.shape[2], y.shape[3])
+                    combine_y = low_y.new_zeros(combine_shape)
+
+                    combine_y[index] = y
+                    combine_y[~index] = combine_low_y
+
+                    multi_scale_features.append(combine_y)
                 else:
-                    if self.training:
-                        multi_scale_features.append(y[index])
+                    if half_fuse:
+                        multi_scale_features.append(y)
                     else:
-                        multi_scale_features.append(y[index])
+                        multi_scale_features.append(y)
                 num_cur_levels += 1
-        return self.mask_features(y), transformer_encoder_features, multi_scale_features, loss_kd
+            elif not half_fuse:
+                mask_features = self.mask_features(y)
+                low_mask_features = self.mask_features(low_y)
+                low_mask_features = F.interpolate(low_mask_features, size=mask_features.shape[-2:], mode="nearest")
+                combine_shape = (len(index), low_mask_features.shape[1], low_mask_features.shape[2], low_mask_features.shape[3])
+                combine_mask_features = mask_features.new_zeros(combine_shape)
+                combine_mask_features[index] = mask_features
+                combine_mask_features[~index] = low_mask_features
+
+        if half_fuse:
+            return self.mask_features(y), transformer_encoder_features, multi_scale_features, loss_kd
+        else:
+            return combine_mask_features, transformer_encoder_features, multi_scale_features, loss_kd
 
     def forward(self, features, targets=None):
         logger = logging.getLogger(__name__)
