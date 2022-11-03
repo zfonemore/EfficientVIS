@@ -200,7 +200,7 @@ class VideoMaskFormer(nn.Module):
         ori_image_size = images_tensor.shape[-2:]
         scale_image_size = (ori_image_size[0] // 2, ori_image_size[1] // 2)
 
-        gap = 2
+        gap = 8
         half_fuse = True
         if gap > 1:
             index = torch.zeros(len(images_tensor), dtype=torch.bool)

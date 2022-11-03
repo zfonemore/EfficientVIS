@@ -291,6 +291,7 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
         num_cur_levels = 0
 
         half_fuse = True
+        fuse_level = 2
 
         loss_kd = 0
         # Reverse feature maps into top-down order (from low to high resolution)
@@ -305,16 +306,19 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
             output_conv = self.output_convs[idx]
             if lateral_conv is None:
                 transformer = self.input_proj(x)
-                pos = self.pe_layer(x)
-                transformer = self.transformer(transformer, None, pos)
+                combine_shape = (len(index), x.shape[1], x.shape[2], x.shape[3])
+                combine_x = x.new_zeros(combine_shape)
+                pos = self.pe_layer(combine_x)
+                transformer = self.transformer(transformer, None, pos[index])
                 y = output_conv(transformer)
 
                 # save intermediate feature as input to Transformer decoder
                 transformer_encoder_features = transformer
 
                 if low_x is not None:
+                    low_x = F.interpolate(low_x, size=x.shape[-2:], mode="nearest")
                     low_transformer = self.input_proj(low_x)
-                    low_pos = self.pe_layer(low_x)
+                    low_pos = pos[~index]#self.pe_layer(low_x)
                     low_transformer = self.transformer(low_transformer, None, low_pos)
                     low_y = output_conv(low_transformer)
             else:
@@ -332,7 +336,7 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
                         low_y = low_cur_fpn + F.interpolate(low_y, size=low_cur_fpn.shape[-2:], mode="nearest")
                         low_y = output_conv(low_y)
                 else:
-                    if idx != 1:
+                    if idx != fuse_level:
                         cur_fpn = lateral_conv(x)
                         # Following FPN implementation, we use nearest upsampling here
 
@@ -340,13 +344,14 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
                         y = output_conv(y)
 
                         if low_x is not None:
-                            if idx < 1:
+                            if idx < fuse_level:
+                                low_x = F.interpolate(low_x, size=x.shape[-2:], mode="nearest")
                                 low_cur_fpn = lateral_conv(low_x)
                                 # Following FPN implementation, we use nearest upsampling here
 
                                 low_y = low_cur_fpn + F.interpolate(low_y, size=low_cur_fpn.shape[-2:], mode="nearest")
                                 low_y = output_conv(low_y)
-                    elif idx == 1:
+                    elif idx == fuse_level:
                         cur_fpn = lateral_conv(x)
                         # gap low resolution combine
                         y = F.interpolate(y, size=cur_fpn.shape[-2:], mode="nearest")
@@ -368,20 +373,20 @@ class TransformerEncoderPixelDecoder(BasePixelDecoder):
                             loss_kd = 0
 
             if num_cur_levels < self.maskformer_num_feature_levels:
-                if idx < 1:
+                if (idx < fuse_level) or (not half_fuse):
                     combine_low_y = F.interpolate(low_y, size=y.shape[-2:], mode="nearest")
                     combine_shape = (len(index), y.shape[1], y.shape[2], y.shape[3])
                     combine_y = low_y.new_zeros(combine_shape)
 
-                    combine_y[index] = y
+                    if self.training:
+                        combine_y[index] = y
+                    else:
+                        combine_y[index] = y
                     combine_y[~index] = combine_low_y
 
                     multi_scale_features.append(combine_y)
                 else:
-                    if half_fuse:
-                        multi_scale_features.append(y)
-                    else:
-                        multi_scale_features.append(y)
+                    multi_scale_features.append(y)
                 num_cur_levels += 1
             elif not half_fuse:
                 mask_features = self.mask_features(y)
